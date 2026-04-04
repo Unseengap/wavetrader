@@ -142,7 +142,7 @@ def train_model(
             best_val_acc = val_acc
             torch.save(model.state_dict(), checkpoint)
 
-        if (epoch + 1) % 5 == 0 or epoch == 0:
+        if True:
             print(
                 f"Epoch {epoch+1:3d}/{config.epochs}  "
                 f"train={train_loss:.4f}  val={val_loss:.4f}  acc={val_acc:.2%}"
@@ -239,7 +239,7 @@ def train_mtf_model(
             best_val_acc = val_acc
             torch.save(model.state_dict(), checkpoint)
 
-        if (epoch + 1) % 5 == 0 or epoch == 0:
+        if True:
             print(
                 f"Epoch {epoch+1:3d}/{config.epochs}  "
                 f"train={train_loss:.4f}  val={val_loss:.4f}  acc={val_acc:.2%}"
