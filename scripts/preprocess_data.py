@@ -43,7 +43,7 @@ OUT_DIR  = ROOT_DIR / "processed_data"
 sys.path.insert(0, str(ROOT_DIR))
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-PAIRS = ["GBPJPY", "USDJPY", "EURJPY", "GBPUSD"]
+PAIRS = ["GBPJPY", "EURJPY", "GBPUSD"]  # USDJPY temporarily removed due to missing 2023-2026 data
 
 # JForex directory name fragment for each timeframe
 TF_DIR_NAME: Dict[str, str] = {
