@@ -239,12 +239,17 @@ function setupEventListeners() {
             const tf = btn.dataset.tf;
             const pair = document.getElementById('nav-pair-select').value;
             document.getElementById('nav-tf-select').value = tf;
-            await chartManager.loadCandles(pair, tf);
 
-            // Re-apply trade markers if we have results
-            if (currentResults && currentResults.trades) {
-                chartManager.setTradeMarkers(currentResults.trades);
-                chartManager.setPriceLines(currentResults.trades);
+            if (typeof liveMode !== 'undefined' && liveMode) {
+                await loadLiveCandles(pair, tf);
+            } else {
+                await chartManager.loadCandles(pair, tf);
+
+                // Re-apply trade markers if we have results
+                if (currentResults && currentResults.trades) {
+                    chartManager.setTradeMarkers(currentResults.trades);
+                    chartManager.setPriceLines(currentResults.trades);
+                }
             }
         });
     });
@@ -254,7 +259,12 @@ function setupEventListeners() {
         const pair = e.target.value;
         document.getElementById('cfg-pair').value = pair;
         const tf = document.getElementById('nav-tf-select').value || '1h';
-        await chartManager.loadCandles(pair, tf);
+
+        if (typeof liveMode !== 'undefined' && liveMode) {
+            await loadLiveCandles(pair, tf);
+        } else {
+            await chartManager.loadCandles(pair, tf);
+        }
     });
 
     // Config pair change → sync nav

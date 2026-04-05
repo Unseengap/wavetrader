@@ -32,8 +32,19 @@
 
     <div style="flex:1"></div>
 
+    <!-- Live Toggle -->
+    <div class="wt-live-toggle">
+        <label class="wt-switch" title="Toggle live OANDA data">
+            <input type="checkbox" id="live-toggle">
+            <span class="wt-switch-slider"></span>
+        </label>
+        <span id="live-label" style="font-size:0.78rem;color:var(--wt-text-muted);margin-left:6px">
+            Historical
+        </span>
+    </div>
+
     <!-- Status -->
-    <div style="font-size:0.78rem;color:var(--wt-text-muted)">
+    <div id="connection-status" style="font-size:0.78rem;color:var(--wt-text-muted)">
         <i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i>
         Dashboard Active
     </div>
@@ -254,9 +265,95 @@
 
     <!-- ─── Right Sidebar: Metrics ─────────────────────────────────────── -->
     <div class="wt-sidebar-right">
-        <div class="wt-card-header">
-            <i class="bi bi-speedometer2"></i> Performance
+
+        <!-- ── Live Panel (hidden by default, shown when live toggle is on) ── -->
+        <div id="live-panel" style="display:none">
+            <div class="wt-card-header">
+                <i class="bi bi-broadcast"></i> Live Feed
+                <span id="live-status-dot" class="wt-status-dot offline"></span>
+            </div>
+
+            <!-- Account -->
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-bank"></i> OANDA Account</div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Balance</span>
+                    <span class="wt-metric-value" id="live-balance">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">NAV</span>
+                    <span class="wt-metric-value" id="live-nav">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Unrealised P&L</span>
+                    <span class="wt-metric-value" id="live-unreal-pnl">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Open Trades</span>
+                    <span class="wt-metric-value" id="live-open-trades">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Market</span>
+                    <span class="wt-metric-value" id="live-market-status">—</span>
+                </div>
+            </div>
+
+            <!-- Live Price -->
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-currency-exchange"></i> Price</div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Bid</span>
+                    <span class="wt-metric-value" id="live-bid" style="font-family:monospace">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Ask</span>
+                    <span class="wt-metric-value" id="live-ask" style="font-family:monospace">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Spread</span>
+                    <span class="wt-metric-value" id="live-spread">—</span>
+                </div>
+            </div>
+
+            <!-- Latest Signal -->
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-lightning-charge"></i> Model Signal</div>
+                <div style="text-align:center;padding:0.5rem 0">
+                    <div id="live-signal-badge" class="wt-signal-badge hold">HOLD</div>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Confidence</span>
+                    <span class="wt-metric-value" id="live-confidence">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">TF Alignment</span>
+                    <span class="wt-metric-value" id="live-alignment">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">SL (pips)</span>
+                    <span class="wt-metric-value" id="live-sl">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">TP (pips)</span>
+                    <span class="wt-metric-value" id="live-tp">—</span>
+                </div>
+                <div style="font-size:0.7rem;color:var(--wt-text-muted);padding:0.25rem 0.5rem" id="live-signal-time">—</div>
+            </div>
+
+            <!-- Open Positions -->
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-box-arrow-in-right"></i> Open Positions</div>
+                <div id="live-positions-list" style="font-size:0.75rem">
+                    <div class="wt-empty-state" style="padding:0.5rem">No open positions</div>
+                </div>
+            </div>
         </div>
+
+        <!-- ── Backtest Performance Panel (default visible) ── -->
+        <div id="backtest-panel">
+            <div class="wt-card-header">
+                <i class="bi bi-speedometer2"></i> Performance
+            </div>
 
         <!-- Big Stat Cards -->
         <div class="wt-stat-grid">
@@ -326,6 +423,7 @@
                 </div>
             </div>
         </div>
+    </div><!-- /backtest-panel -->
     </div>
 </div>
 {% endblock %}
@@ -334,4 +432,5 @@
 <script src="{{ url_for('static', filename='js/chart-manager.js') }}"></script>
 <script src="{{ url_for('static', filename='js/analytics-charts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/config-panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/live-panel.js') }}"></script>
 {% endblock %}

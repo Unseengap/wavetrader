@@ -18,6 +18,7 @@
     --wt-blue: #58a6ff;
     --wt-blue-dim: rgba(88, 166, 255, 0.15);
     --wt-orange: #d29922;
+    --wt-yellow: #e3b341;
     --wt-purple: #bc8cff;
     --wt-cyan: #39d2c0;
     --wt-accent-gradient: linear-gradient(135deg, #58a6ff 0%, #bc8cff 100%);
@@ -580,3 +581,117 @@ body {
 .wt-legend-dot.sell { background: var(--wt-red); }
 .wt-legend-dot.tp { background: var(--wt-blue); }
 .wt-legend-dot.sl { background: var(--wt-orange); }
+
+/* ═══ Live Toggle Switch ═══════════════════════════════════════════════════ */
+
+.wt-live-toggle {
+    display: flex;
+    align-items: center;
+    margin-right: 1rem;
+}
+
+.wt-switch {
+    position: relative;
+    display: inline-block;
+    width: 38px;
+    height: 20px;
+}
+
+.wt-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.wt-switch-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--wt-bg-input);
+    border: 1px solid var(--wt-border);
+    border-radius: 20px;
+    transition: 0.3s;
+}
+
+.wt-switch-slider::before {
+    content: '';
+    position: absolute;
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+    background: var(--wt-text-muted);
+    border-radius: 50%;
+    transition: 0.3s;
+}
+
+.wt-switch input:checked + .wt-switch-slider {
+    background: var(--wt-green-dim);
+    border-color: var(--wt-green);
+}
+
+.wt-switch input:checked + .wt-switch-slider::before {
+    transform: translateX(18px);
+    background: var(--wt-green);
+}
+
+/* ═══ Status Dot ═══════════════════════════════════════════════════════════ */
+
+.wt-status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.wt-status-dot.online {
+    background: var(--wt-green);
+    box-shadow: 0 0 6px var(--wt-green);
+    animation: pulse-dot 2s infinite;
+}
+
+.wt-status-dot.offline {
+    background: var(--wt-text-muted);
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* ═══ Signal Badge ═════════════════════════════════════════════════════════ */
+
+.wt-signal-badge {
+    display: inline-block;
+    padding: 0.35rem 1.2rem;
+    border-radius: 6px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.wt-signal-badge.buy {
+    background: var(--wt-green-dim);
+    color: var(--wt-green);
+    border: 1px solid var(--wt-green);
+}
+
+.wt-signal-badge.sell {
+    background: var(--wt-red-dim);
+    color: var(--wt-red);
+    border: 1px solid var(--wt-red);
+}
+
+.wt-signal-badge.hold {
+    background: var(--wt-bg-input);
+    color: var(--wt-text-muted);
+    border: 1px solid var(--wt-border);
+}
+
+@keyframes signal-flash {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+}

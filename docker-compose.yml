@@ -46,6 +46,10 @@ services:
       - ./processed_data:/processed_data:ro
     env_file:
       - .env
+    environment:
+      - OANDA_API_KEY=${OANDA_API_KEY}
+      - OANDA_ACCOUNT_ID=${OANDA_ACCOUNT_ID}
+      - OANDA_ENVIRONMENT=${OANDA_ENVIRONMENT:-practice}
     command: python -m dashboard.run --host 0.0.0.0 --port 5000
     logging:
       driver: json-file
