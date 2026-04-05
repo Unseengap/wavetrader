@@ -35,6 +35,17 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
+
+# Load .env file if present (before any imports that read env vars)
+_env_file = Path(__file__).parent / ".env"
+if _env_file.exists():
+    with open(_env_file) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _, _val = _line.partition("=")
+                os.environ.setdefault(_key.strip(), _val.strip())
 
 import torch
 import torch.utils.data as tud
@@ -328,7 +339,7 @@ def run_live(args: argparse.Namespace, device: torch.device) -> None:
     print(f"\n  Model parameters: {model.count_parameters():,}")
 
     if args.checkpoint and os.path.exists(args.checkpoint):
-        state = torch.load(args.checkpoint, weights_only=False)
+        state = torch.load(args.checkpoint, weights_only=False, map_location=device)
         if "model_state_dict" in state:
             model.load_state_dict(state["model_state_dict"])
         else:
@@ -342,7 +353,7 @@ def run_live(args: argparse.Namespace, device: torch.device) -> None:
             for d in reversed(subdirs):
                 weights = os.path.join(ckpt_dir, d, "model_weights.pt")
                 if os.path.exists(weights):
-                    state = torch.load(weights, weights_only=False)
+                    state = torch.load(weights, weights_only=False, map_location=device)
                     if "model_state_dict" in state:
                         model.load_state_dict(state["model_state_dict"])
                     else:

@@ -30,7 +30,7 @@ import pandas as pd
 import torch
 from torch import Tensor
 
-from .config import AggressiveMTFConfig, BacktestConfig, MTFConfig, ResonanceConfig
+from .config import BacktestConfig, MTFConfig, ResonanceConfig
 from .dataset import ResonanceBuffer, prepare_features
 from .model import WaveTraderMTF
 from .monitor import Monitor, MonitorConfig
