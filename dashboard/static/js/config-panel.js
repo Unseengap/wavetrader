@@ -1,6 +1,7 @@
 /**
  * WaveTrader Config Panel & Dashboard Controller
- * Handles config form, backtest execution, and state management.
+ * Handles config form, backtest execution, sidebar toggles,
+ * drag handle, top-level tabs, and state management.
  */
 
 let chartManager = null;
@@ -11,6 +12,9 @@ let currentResults = null;
 document.addEventListener('DOMContentLoaded', async () => {
     // Init TradingView chart
     chartManager = new ChartManager('priceChart');
+
+    // Restore layout state
+    restoreLayoutState();
 
     // Load defaults into form
     await loadDefaults();
@@ -25,6 +29,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Set up event listeners
     setupEventListeners();
+    setupSidebarToggles();
+    setupDragHandle();
+    setupTopTabs();
+    setupKeyboardShortcuts();
 });
 
 
@@ -180,11 +188,16 @@ function updateDashboard(results) {
     // Update analytics charts
     renderAllAnalytics(results);
 
+    // Update trade log
+    if (typeof renderTradeLog === 'function') {
+        renderTradeLog(results.trades);
+    }
+
     // Show the analytics area
-    document.querySelectorAll('.wt-tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelector('.wt-tab-pane').classList.add('active');
-    document.querySelectorAll('.wt-tab').forEach(t => t.classList.remove('active'));
-    document.querySelector('.wt-tab').classList.add('active');
+    document.querySelectorAll('#top-tab-backtest-hub .wt-tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelector('#top-tab-backtest-hub .wt-tab-pane').classList.add('active');
+    document.querySelectorAll('#top-tab-backtest-hub .wt-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('#top-tab-backtest-hub .wt-tab').classList.add('active');
 }
 
 
@@ -272,13 +285,13 @@ function setupEventListeners() {
         document.getElementById('nav-pair-select').value = e.target.value;
     });
 
-    // Analytics tabs
-    document.querySelectorAll('.wt-tab').forEach(tab => {
+    // Analytics tabs (backtest hub sub-tabs)
+    document.querySelectorAll('#top-tab-backtest-hub .wt-tab').forEach(tab => {
         tab.addEventListener('click', () => {
             const target = tab.dataset.tab;
-            document.querySelectorAll('.wt-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('#top-tab-backtest-hub .wt-tab').forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
-            document.querySelectorAll('.wt-tab-pane').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('#top-tab-backtest-hub .wt-tab-pane').forEach(p => p.classList.remove('active'));
             document.getElementById(`tab-${target}`).classList.add('active');
 
             // Trigger Plotly resize for newly visible charts
@@ -289,6 +302,17 @@ function setupEventListeners() {
                     }
                 });
             }, 50);
+        });
+    });
+
+    // Live hub sub-tabs
+    document.querySelectorAll('.wt-live-tabs .wt-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const target = tab.dataset.liveTab;
+            document.querySelectorAll('.wt-live-tabs .wt-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            document.querySelectorAll('.wt-live-tab-pane').forEach(p => p.classList.remove('active'));
+            document.getElementById(`tab-${target}`).classList.add('active');
         });
     });
 
@@ -336,4 +360,208 @@ function showToast(message, type = 'info') {
         toast.style.transition = 'opacity 0.3s';
         setTimeout(() => toast.remove(), 300);
     }, 4000);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sidebar Toggles
+// ═══════════════════════════════════════════════════════════════════════════
+
+function setupSidebarToggles() {
+    const layout = document.getElementById('wt-layout');
+    const leftBtn = document.getElementById('toggle-left-sidebar');
+    const rightBtn = document.getElementById('toggle-right-sidebar');
+
+    leftBtn.addEventListener('click', () => {
+        layout.classList.toggle('left-collapsed');
+        leftBtn.classList.toggle('active', layout.classList.contains('left-collapsed'));
+        saveLayoutState();
+        triggerChartResize();
+    });
+
+    rightBtn.addEventListener('click', () => {
+        layout.classList.toggle('right-collapsed');
+        rightBtn.classList.toggle('active', layout.classList.contains('right-collapsed'));
+        saveLayoutState();
+        triggerChartResize();
+    });
+}
+
+function triggerChartResize() {
+    // Allow CSS transition to complete
+    setTimeout(() => {
+        if (chartManager && chartManager.chart) {
+            const container = chartManager.container;
+            chartManager.chart.applyOptions({
+                width: container.clientWidth,
+                height: container.clientHeight,
+            });
+        }
+        // Resize Plotly charts too
+        document.querySelectorAll('.plotly-chart .js-plotly-plot').forEach(el => {
+            Plotly.Plots.resize(el);
+        });
+    }, 320);
+}
+
+function saveLayoutState() {
+    const layout = document.getElementById('wt-layout');
+    const state = {
+        leftCollapsed: layout.classList.contains('left-collapsed'),
+        rightCollapsed: layout.classList.contains('right-collapsed'),
+        chartRatio: parseFloat(localStorage.getItem('wt-chart-ratio') || '0.5'),
+    };
+    localStorage.setItem('wt-layout-state', JSON.stringify(state));
+}
+
+function restoreLayoutState() {
+    try {
+        const raw = localStorage.getItem('wt-layout-state');
+        if (!raw) return;
+        const state = JSON.parse(raw);
+        const layout = document.getElementById('wt-layout');
+
+        if (state.leftCollapsed) {
+            layout.classList.add('left-collapsed');
+            document.getElementById('toggle-left-sidebar').classList.add('active');
+        }
+        if (state.rightCollapsed) {
+            layout.classList.add('right-collapsed');
+            document.getElementById('toggle-right-sidebar').classList.add('active');
+        }
+        if (state.chartRatio) {
+            applyChartRatio(state.chartRatio);
+        }
+    } catch (e) {
+        // Ignore corrupt state
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Drag Handle (Chart / Central Panel resizer)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function setupDragHandle() {
+    const handle = document.getElementById('drag-handle');
+    const chartArea = document.getElementById('chart-area');
+    const centralPanel = document.getElementById('central-panel');
+    const main = document.getElementById('wt-main');
+
+    let dragging = false;
+    let startY = 0;
+    let startChartH = 0;
+    let startPanelH = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        dragging = true;
+        startY = e.clientY;
+        startChartH = chartArea.getBoundingClientRect().height;
+        startPanelH = centralPanel.getBoundingClientRect().height;
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        const dy = e.clientY - startY;
+        const mainH = main.getBoundingClientRect().height;
+        // Subtract legend (approx 32px) + handle (8px) from available space
+        const available = mainH - 40;
+        const newChartH = Math.max(200, Math.min(available - 150, startChartH + dy));
+        const ratio = newChartH / available;
+        applyChartRatio(ratio);
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        // Persist ratio
+        const chartArea = document.getElementById('chart-area');
+        const main = document.getElementById('wt-main');
+        const available = main.getBoundingClientRect().height - 40;
+        const ratio = chartArea.getBoundingClientRect().height / available;
+        localStorage.setItem('wt-chart-ratio', ratio.toFixed(3));
+        saveLayoutState();
+        triggerChartResize();
+    });
+
+    // Double-click to toggle panel collapsed / 50-50
+    handle.addEventListener('dblclick', () => {
+        const panel = document.getElementById('central-panel');
+        if (panel.classList.contains('collapsed')) {
+            panel.classList.remove('collapsed');
+            applyChartRatio(0.5);
+        } else {
+            panel.classList.add('collapsed');
+            applyChartRatio(1.0);
+        }
+        localStorage.setItem('wt-chart-ratio', panel.classList.contains('collapsed') ? '1.0' : '0.5');
+        saveLayoutState();
+        setTimeout(triggerChartResize, 50);
+    });
+}
+
+function applyChartRatio(ratio) {
+    const chartArea = document.getElementById('chart-area');
+    const centralPanel = document.getElementById('central-panel');
+    ratio = Math.max(0.15, Math.min(0.95, ratio));
+    chartArea.style.flex = `${ratio} 1 0`;
+    centralPanel.style.flex = `${1 - ratio} 1 0`;
+    if (ratio >= 0.95) {
+        centralPanel.classList.add('collapsed');
+    } else {
+        centralPanel.classList.remove('collapsed');
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Top-Level Tabs (Backtest Results / Live Trading)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function setupTopTabs() {
+    document.querySelectorAll('.wt-top-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const target = tab.dataset.topTab;
+            document.querySelectorAll('.wt-top-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            document.querySelectorAll('.wt-top-tab-pane').forEach(p => p.classList.remove('active'));
+            document.getElementById(`top-tab-${target}`).classList.add('active');
+        });
+    });
+}
+
+function switchToTopTab(tabName) {
+    document.querySelectorAll('.wt-top-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.wt-top-tab-pane').forEach(p => p.classList.remove('active'));
+    const tab = document.querySelector(`.wt-top-tab[data-top-tab="${tabName}"]`);
+    if (tab) tab.classList.add('active');
+    const pane = document.getElementById(`top-tab-${tabName}`);
+    if (pane) pane.classList.add('active');
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Keyboard Shortcuts
+// ═══════════════════════════════════════════════════════════════════════════
+
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        // Don't trigger when typing in inputs
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+
+        if (e.key === '[') {
+            e.preventDefault();
+            document.getElementById('toggle-left-sidebar').click();
+        } else if (e.key === ']') {
+            e.preventDefault();
+            document.getElementById('toggle-right-sidebar').click();
+        }
+    });
 }

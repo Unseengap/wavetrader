@@ -13,6 +13,8 @@ class ChartManager {
         this.priceLines = [];
         this.currentPair = 'GBP/JPY';
         this.currentTF = '1h';
+        this._trades = [];
+        this._tradeTimeIndex = {};
         this._init();
     }
 
@@ -119,8 +121,13 @@ class ChartManager {
     setTradeMarkers(trades) {
         if (!trades || trades.length === 0) {
             this.candleSeries.setMarkers([]);
+            this._trades = [];
+            this._tradeTimeIndex = {};
             return;
         }
+
+        this._trades = trades;
+        this._buildTradeTimeIndex(trades);
 
         const markers = [];
 
@@ -239,6 +246,23 @@ class ChartManager {
             const changePct = ((change / bar.open) * 100).toFixed(3);
             const color = change >= 0 ? '#3fb950' : '#f85149';
 
+            // Check if any trade active at this time
+            let tradeInfo = '';
+            const ts = typeof param.time === 'object' ? new Date(param.time.year, param.time.month - 1, param.time.day).getTime() / 1000 : param.time;
+            const tradesAtTime = this._findTradesAtTime(ts);
+            if (tradesAtTime.length > 0) {
+                const t = tradesAtTime[0];
+                const dirColor = t.trade.direction === 'BUY' ? '#3fb950' : '#f85149';
+                const pnlColor = t.trade.pnl >= 0 ? '#3fb950' : '#f85149';
+                tradeInfo = `
+                    <div style="margin-top:4px;padding-top:4px;border-top:1px solid #30363d">
+                        <span style="color:${dirColor};font-weight:700">${t.trade.direction}</span>
+                        #${t.index + 1} ·
+                        P&L: <b style="color:${pnlColor}">${t.trade.pnl >= 0 ? '+' : ''}$${t.trade.pnl.toFixed(2)}</b>
+                    </div>
+                `;
+            }
+
             tooltip.innerHTML = `
                 <div style="margin-bottom:4px;color:#8b949e">
                     ${this.currentPair} · ${this.currentTF}
@@ -246,6 +270,7 @@ class ChartManager {
                 <div>O <b>${bar.open.toFixed(3)}</b>  H <b>${bar.high.toFixed(3)}</b></div>
                 <div>L <b>${bar.low.toFixed(3)}</b>  C <b style="color:${color}">${bar.close.toFixed(3)}</b></div>
                 <div style="color:${color};margin-top:2px">${change >= 0 ? '+' : ''}${change.toFixed(3)} (${changePct}%)</div>
+                ${tradeInfo}
             `;
 
             tooltip.style.display = 'block';
@@ -255,6 +280,95 @@ class ChartManager {
                 : `${x + 20}px`;
             tooltip.style.top = '10px';
         });
+
+        // Click handler for chart → trade navigation
+        this.chart.subscribeClick(param => {
+            if (!param.time) return;
+            const ts = typeof param.time === 'object' ? new Date(param.time.year, param.time.month - 1, param.time.day).getTime() / 1000 : param.time;
+            const tradesAtTime = this._findTradesAtTime(ts);
+
+            if (tradesAtTime.length > 0) {
+                const t = tradesAtTime[0];
+                this._showTradeTooltip(t, param.point);
+            } else {
+                this._hideTradeTooltip();
+            }
+        });
+    }
+
+    _buildTradeTimeIndex(trades) {
+        this._tradeTimeIndex = {};
+        trades.forEach((trade, i) => {
+            if (trade.entry_time) {
+                const entryTs = Math.floor(new Date(trade.entry_time).getTime() / 1000);
+                if (!this._tradeTimeIndex[entryTs]) this._tradeTimeIndex[entryTs] = [];
+                this._tradeTimeIndex[entryTs].push({ index: i, trade, type: 'entry' });
+            }
+            if (trade.exit_time) {
+                const exitTs = Math.floor(new Date(trade.exit_time).getTime() / 1000);
+                if (!this._tradeTimeIndex[exitTs]) this._tradeTimeIndex[exitTs] = [];
+                this._tradeTimeIndex[exitTs].push({ index: i, trade, type: 'exit' });
+            }
+        });
+    }
+
+    _findTradesAtTime(timestamp) {
+        // Look for exact match first, then within a range
+        if (this._tradeTimeIndex[timestamp]) {
+            return this._tradeTimeIndex[timestamp];
+        }
+        // Check within ±1 candle depending on timeframe
+        const tfSeconds = { '15min': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+        const range = tfSeconds[this.currentTF] || 3600;
+        const results = [];
+        for (let t = timestamp - range; t <= timestamp + range; t++) {
+            if (this._tradeTimeIndex[t]) {
+                results.push(...this._tradeTimeIndex[t]);
+            }
+        }
+        return results;
+    }
+
+    _showTradeTooltip(tradeInfo, point) {
+        const tooltip = document.getElementById('chart-trade-tooltip');
+        if (!tooltip) return;
+
+        const t = tradeInfo.trade;
+        const dirClass = t.direction === 'BUY' ? 'buy' : 'sell';
+        const pnlClass = t.pnl >= 0 ? 'positive' : 'negative';
+
+        tooltip.innerHTML = `
+            <div class="tooltip-dir ${dirClass}">${t.direction} #${tradeInfo.index + 1}</div>
+            <div>Entry: ${t.entry_price ? t.entry_price.toFixed(3) : '—'} → Exit: ${t.exit_price ? t.exit_price.toFixed(3) : '—'}</div>
+            <div>SL: ${t.stop_loss ? t.stop_loss.toFixed(3) : '—'} · TP: ${t.take_profit ? t.take_profit.toFixed(3) : '—'}</div>
+            <div class="tooltip-pnl ${pnlClass}">P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</div>
+            <div style="font-size:0.7rem;color:var(--wt-text-muted);margin-top:0.2rem">
+                ${t.exit_reason || ''} · Click to view in Trade Log
+            </div>
+        `;
+
+        // Position near the chart point
+        const chartRect = this.container.getBoundingClientRect();
+        tooltip.style.display = 'block';
+        tooltip.style.left = `${chartRect.left + point.x + 15}px`;
+        tooltip.style.top = `${chartRect.top + point.y - 20}px`;
+
+        // Click tooltip → navigate to trade in Trade Log
+        tooltip.onclick = () => {
+            if (typeof scrollToTradeRow === 'function') {
+                scrollToTradeRow(tradeInfo.index);
+            }
+            this._hideTradeTooltip();
+        };
+
+        // Auto-hide after 5s
+        clearTimeout(this._tooltipTimer);
+        this._tooltipTimer = setTimeout(() => this._hideTradeTooltip(), 5000);
+    }
+
+    _hideTradeTooltip() {
+        const tooltip = document.getElementById('chart-trade-tooltip');
+        if (tooltip) tooltip.style.display = 'none';
     }
 
     destroy() {

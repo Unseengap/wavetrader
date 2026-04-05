@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 import time
+import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -19,6 +21,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # ── Lazy imports of wavetrader internals ─────────────────────────────────────
 # Imported at function call time so the module can be loaded even if torch
@@ -293,6 +297,18 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     pair = cfg["pair"]
     entry_tf = cfg["entry_timeframe"]
 
+    # Validate numeric config values
+    numeric_keys = [
+        "initial_balance", "risk_per_trade", "leverage", "spread_pips",
+        "commission_per_lot", "pip_value", "min_confidence",
+        "atr_halt_multiplier", "drawdown_reduce_threshold",
+    ]
+    for key in numeric_keys:
+        try:
+            float(cfg[key])
+        except (ValueError, TypeError):
+            return {"error": f"Invalid value for {key}: {cfg[key]}"}
+
     # Build BacktestConfig
     bt_config = BacktestConfig(
         initial_balance=float(cfg["initial_balance"]),
@@ -320,13 +336,23 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
         tf_short = tf.replace("min", "m")
         parquet_path = processed_dir / f"{pair_tag}_{tf_short}.parquet"
         if parquet_path.exists():
-            df_dict[tf] = pd.read_parquet(parquet_path)
+            try:
+                df_dict[tf] = pd.read_parquet(parquet_path)
+                logger.info("Loaded %s from %s", tf, parquet_path)
+            except Exception as e:
+                logger.warning("Failed to read parquet %s: %s", parquet_path, e)
 
     if not df_dict:
-        df_dict = load_mtf_data(pair=pair, data_dir=str(data_dir))
+        try:
+            df_dict = load_mtf_data(pair=pair, data_dir=str(data_dir))
+        except Exception as e:
+            logger.error("load_mtf_data failed: %s", traceback.format_exc())
+            return {"error": f"Failed to load data for {pair}: {e}"}
 
     if not df_dict:
         return {"error": f"No data found for {pair}"}
+
+    logger.info("Data loaded: %s", {k: len(v) for k, v in df_dict.items()})
 
     # Load model from checkpoint
     checkpoint_dir = _resolve_dir("checkpoints")
@@ -336,11 +362,17 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": "No model checkpoint found. Train a model first."}
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Running backtest: pair=%s, device=%s, model loaded", pair, device)
 
     # Run backtest
     start_time = time.time()
-    results = run_backtest(model, df_dict, mtf_config, bt_config, device)
+    try:
+        results = run_backtest(model, df_dict, mtf_config, bt_config, device)
+    except Exception as e:
+        logger.error("run_backtest() crashed:\n%s", traceback.format_exc())
+        return {"error": f"Backtest engine error: {e}"}
     elapsed = round(time.time() - start_time, 1)
+    logger.info("Backtest completed in %ss — %d trades", elapsed, len(results.trades))
 
     # Serialize trades
     trades_list = [_trade_to_dict(t) for t in results.trades]
@@ -609,8 +641,69 @@ def _load_latest_model(checkpoint_dir: Path, config: Any) -> Any:
                         model.load_state_dict(state["model_state_dict"])
                     else:
                         model.load_state_dict(state)
+                    logger.info("Model loaded from %s", matches[0])
                     return model
-                except Exception:
+                except Exception as e:
+                    logger.warning("Failed to load model from %s: %s", matches[0], e)
                     continue
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Saved backtests (persist / recall / compare)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SAVED_DIR = _RESULTS_DIR / "saved"
+
+
+def save_backtest_results(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Save a backtest result to disk for later recall."""
+    _SAVED_DIR.mkdir(parents=True, exist_ok=True)
+    run_id = data.get("run_id", str(uuid.uuid4())[:8])
+    entry = {
+        "run_id": run_id,
+        "saved_at": datetime.utcnow().isoformat(),
+        "config": data.get("config", {}),
+        "metrics": data.get("metrics", {}),
+        "trades": data.get("trades", []),
+        "equity_curve": data.get("equity_curve", []),
+        "breakdowns": data.get("breakdowns", {}),
+        "friction": data.get("friction", {}),
+    }
+    path = _SAVED_DIR / f"{run_id}.json"
+    path.write_text(json.dumps(entry, default=str))
+    logger.info("Saved backtest %s to %s", run_id, path)
+    return {"run_id": run_id, "saved_at": entry["saved_at"]}
+
+
+def list_saved_backtests() -> List[Dict[str, Any]]:
+    """List all saved backtests (metadata only, no full trade data)."""
+    if not _SAVED_DIR.exists():
+        return []
+    entries = []
+    for f in sorted(_SAVED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(f.read_text())
+            entries.append({
+                "run_id": data.get("run_id"),
+                "saved_at": data.get("saved_at"),
+                "config": data.get("config", {}),
+                "metrics": data.get("metrics", {}),
+            })
+        except Exception:
+            continue
+    return entries
+
+
+def load_saved_backtest(run_id: str) -> Optional[Dict[str, Any]]:
+    """Load a saved backtest by run_id."""
+    # Sanitize: only allow alphanumeric + hyphen
+    safe_id = "".join(c for c in run_id if c.isalnum() or c == "-")
+    path = _SAVED_DIR / f"{safe_id}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None

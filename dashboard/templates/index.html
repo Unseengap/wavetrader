@@ -8,6 +8,11 @@
 
 <!-- ═══ Navbar ══════════════════════════════════════════════════════════════ -->
 <nav class="wt-navbar">
+    <!-- Left sidebar toggle -->
+    <button class="wt-sidebar-toggle" id="toggle-left-sidebar" title="Toggle config panel [">
+        <i class="bi bi-layout-sidebar-inset"></i>
+    </button>
+
     <div class="wt-brand">
         <i class="bi bi-activity"></i> WaveTrader
     </div>
@@ -48,13 +53,18 @@
         <i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i>
         Dashboard Active
     </div>
+
+    <!-- Right sidebar toggle -->
+    <button class="wt-sidebar-toggle" id="toggle-right-sidebar" title="Toggle metrics panel ]">
+        <i class="bi bi-layout-sidebar-inset-reverse"></i>
+    </button>
 </nav>
 
 <!-- ═══ Main Layout ════════════════════════════════════════════════════════ -->
-<div class="wt-layout">
+<div class="wt-layout" id="wt-layout">
 
     <!-- ─── Left Sidebar: Config Panel ─────────────────────────────────── -->
-    <div class="wt-sidebar-left">
+    <div class="wt-sidebar-left" id="sidebar-left">
         <div class="wt-card-header">
             <i class="bi bi-sliders"></i> Backtest Configuration
         </div>
@@ -183,8 +193,8 @@
         </button>
     </div>
 
-    <!-- ─── Center: Charts ─────────────────────────────────────────────── -->
-    <div class="wt-main">
+    <!-- ─── Center: Charts + Central Panel ─────────────────────────────── -->
+    <div class="wt-main" id="wt-main">
         <!-- Price Chart Legend -->
         <div class="wt-legend">
             <div class="wt-legend-item"><div class="wt-legend-dot buy"></div> Buy Entry</div>
@@ -194,158 +204,271 @@
         </div>
 
         <!-- TradingView Price Chart -->
-        <div class="wt-chart-area">
+        <div class="wt-chart-area" id="chart-area">
             <div id="priceChart"></div>
         </div>
 
-        <!-- Analytics Tabs -->
-        <div class="wt-tabs">
-            <button class="wt-tab active" data-tab="equity">
-                <i class="bi bi-graph-up"></i> Equity
-            </button>
-            <button class="wt-tab" data-tab="pnl">
-                <i class="bi bi-bar-chart"></i> PnL
-            </button>
-            <button class="wt-tab" data-tab="sessions">
-                <i class="bi bi-clock"></i> Sessions
-            </button>
-            <button class="wt-tab" data-tab="duration">
-                <i class="bi bi-hourglass-split"></i> Duration
-            </button>
-            <button class="wt-tab" data-tab="friction">
-                <i class="bi bi-gear"></i> Friction
-            </button>
+        <!-- ─── Drag Handle ─────────────────────────────────────────────── -->
+        <div class="wt-drag-handle" id="drag-handle" title="Drag to resize · Double-click to toggle">
+            <div class="wt-drag-handle-bar"></div>
         </div>
 
-        <!-- Analytics Chart Panes -->
-        <div class="wt-analytics-area">
-            <!-- Equity Tab -->
-            <div id="tab-equity" class="wt-tab-pane active">
-                <div class="wt-chart-grid">
-                    <div id="chart-equity-curve" class="plotly-chart full-width"></div>
-                    <div id="chart-trade-pnl" class="plotly-chart full-width"></div>
-                    <div id="chart-rolling-wr" class="plotly-chart full-width"></div>
+        <!-- ─── Central Panel (Backtest Results / Live Trading) ─────────── -->
+        <div class="wt-central-panel" id="central-panel">
+            <!-- Top-level tabs -->
+            <div class="wt-top-tabs">
+                <button class="wt-top-tab active" data-top-tab="backtest-hub">
+                    <i class="bi bi-bar-chart-line"></i> Backtest Results
+                </button>
+                <button class="wt-top-tab" data-top-tab="live-hub">
+                    <i class="bi bi-broadcast"></i> Live Trading
+                </button>
+            </div>
+
+            <!-- ═══ Backtest Hub ═══════════════════════════════════════════ -->
+            <div id="top-tab-backtest-hub" class="wt-top-tab-pane active">
+                <!-- Sub-tabs -->
+                <div class="wt-tabs">
+                    <button class="wt-tab active" data-tab="equity">
+                        <i class="bi bi-graph-up"></i> Equity
+                    </button>
+                    <button class="wt-tab" data-tab="pnl">
+                        <i class="bi bi-bar-chart"></i> PnL
+                    </button>
+                    <button class="wt-tab" data-tab="sessions">
+                        <i class="bi bi-clock"></i> Sessions
+                    </button>
+                    <button class="wt-tab" data-tab="duration">
+                        <i class="bi bi-hourglass-split"></i> Duration
+                    </button>
+                    <button class="wt-tab" data-tab="friction">
+                        <i class="bi bi-gear"></i> Friction
+                    </button>
+                    <button class="wt-tab" data-tab="trade-log">
+                        <i class="bi bi-table"></i> Trade Log
+                    </button>
+                    <button class="wt-tab" data-tab="saved-backtests">
+                        <i class="bi bi-bookmark"></i> Saved
+                    </button>
+                </div>
+
+                <!-- Analytics Chart Panes -->
+                <div class="wt-analytics-area">
+                    <!-- Equity Tab -->
+                    <div id="tab-equity" class="wt-tab-pane active">
+                        <div class="wt-chart-grid">
+                            <div id="chart-equity-curve" class="plotly-chart full-width"></div>
+                            <div id="chart-trade-pnl" class="plotly-chart full-width"></div>
+                            <div id="chart-rolling-wr" class="plotly-chart full-width"></div>
+                        </div>
+                    </div>
+
+                    <!-- PnL Tab -->
+                    <div id="tab-pnl" class="wt-tab-pane">
+                        <div class="wt-chart-grid">
+                            <div id="chart-monthly-pnl" class="plotly-chart full-width"></div>
+                            <div id="chart-exit-reasons" class="plotly-chart full-width"></div>
+                        </div>
+                    </div>
+
+                    <!-- Sessions Tab -->
+                    <div id="tab-sessions" class="wt-tab-pane">
+                        <div class="wt-chart-grid">
+                            <div id="chart-hourly-trades" class="plotly-chart"></div>
+                            <div id="chart-hourly-pnl" class="plotly-chart"></div>
+                            <div id="chart-daily-pnl" class="plotly-chart"></div>
+                            <div id="chart-daily-wr" class="plotly-chart"></div>
+                        </div>
+                    </div>
+
+                    <!-- Duration Tab -->
+                    <div id="tab-duration" class="wt-tab-pane">
+                        <div class="wt-chart-grid">
+                            <div id="chart-duration" class="plotly-chart full-width"></div>
+                        </div>
+                    </div>
+
+                    <!-- Friction Tab -->
+                    <div id="tab-friction" class="wt-tab-pane">
+                        <div class="wt-chart-grid">
+                            <div id="chart-friction-equity" class="plotly-chart"></div>
+                            <div id="chart-friction-pie" class="plotly-chart"></div>
+                        </div>
+                    </div>
+
+                    <!-- Trade Log Tab (NEW) -->
+                    <div id="tab-trade-log" class="wt-tab-pane">
+                        <div class="wt-trade-log-container">
+                            <div class="wt-trade-log-header">
+                                <span id="trade-log-count">0 trades</span>
+                                <input type="text" id="trade-log-search" class="wt-trade-log-search" placeholder="Filter trades…">
+                            </div>
+                            <div class="wt-trade-log-table-wrap" id="trade-log-table-wrap">
+                                <table class="wt-trade-log-table">
+                                    <thead>
+                                        <tr>
+                                            <th data-sort="index">#</th>
+                                            <th data-sort="entry_time">Entry Time</th>
+                                            <th data-sort="exit_time">Exit Time</th>
+                                            <th data-sort="direction">Dir</th>
+                                            <th data-sort="entry_price">Entry</th>
+                                            <th data-sort="exit_price">Exit</th>
+                                            <th data-sort="stop_loss">SL</th>
+                                            <th data-sort="take_profit">TP</th>
+                                            <th data-sort="size">Size</th>
+                                            <th data-sort="pnl">P&L</th>
+                                            <th data-sort="exit_reason">Reason</th>
+                                            <th data-sort="duration">Duration</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="trade-log-body">
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Saved Backtests Tab (NEW) -->
+                    <div id="tab-saved-backtests" class="wt-tab-pane">
+                        <div class="wt-saved-backtests-container">
+                            <div class="wt-saved-header">
+                                <button id="btn-save-backtest" class="wt-btn-small">
+                                    <i class="bi bi-bookmark-plus"></i> Save Current
+                                </button>
+                            </div>
+                            <div id="saved-backtests-list" class="wt-saved-list">
+                                <div class="wt-empty-state" style="padding:1rem">
+                                    <p>No saved backtests yet</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <!-- PnL Tab -->
-            <div id="tab-pnl" class="wt-tab-pane">
-                <div class="wt-chart-grid">
-                    <div id="chart-monthly-pnl" class="plotly-chart full-width"></div>
-                    <div id="chart-exit-reasons" class="plotly-chart full-width"></div>
+            <!-- ═══ Live Trading Hub ═══════════════════════════════════════ -->
+            <div id="top-tab-live-hub" class="wt-top-tab-pane">
+                <!-- Sub-tabs -->
+                <div class="wt-tabs wt-live-tabs">
+                    <button class="wt-tab active" data-live-tab="live-account">
+                        <i class="bi bi-bank"></i> Account
+                    </button>
+                    <button class="wt-tab" data-live-tab="live-positions">
+                        <i class="bi bi-box-arrow-in-right"></i> Open Positions
+                    </button>
+                    <button class="wt-tab" data-live-tab="live-history">
+                        <i class="bi bi-clock-history"></i> Trade History
+                    </button>
+                    <button class="wt-tab" data-live-tab="live-signals">
+                        <i class="bi bi-lightning-charge"></i> Signals
+                    </button>
                 </div>
-            </div>
 
-            <!-- Sessions Tab -->
-            <div id="tab-sessions" class="wt-tab-pane">
-                <div class="wt-chart-grid">
-                    <div id="chart-hourly-trades" class="plotly-chart"></div>
-                    <div id="chart-hourly-pnl" class="plotly-chart"></div>
-                    <div id="chart-daily-pnl" class="plotly-chart"></div>
-                    <div id="chart-daily-wr" class="plotly-chart"></div>
-                </div>
-            </div>
+                <div class="wt-analytics-area">
+                    <!-- Account Tab -->
+                    <div id="tab-live-account" class="wt-live-tab-pane active">
+                        <div class="wt-live-account-grid">
+                            <div class="wt-card">
+                                <div class="wt-card-header"><i class="bi bi-bank"></i> OANDA Account</div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Balance</span>
+                                    <span class="wt-metric-value" id="live-balance">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">NAV</span>
+                                    <span class="wt-metric-value" id="live-nav">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Unrealised P&L</span>
+                                    <span class="wt-metric-value" id="live-unreal-pnl">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Open Trades</span>
+                                    <span class="wt-metric-value" id="live-open-trades">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Market</span>
+                                    <span class="wt-metric-value" id="live-market-status">—</span>
+                                </div>
+                            </div>
+                            <div class="wt-card">
+                                <div class="wt-card-header"><i class="bi bi-currency-exchange"></i> Price</div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Bid</span>
+                                    <span class="wt-metric-value" id="live-bid" style="font-family:monospace">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Ask</span>
+                                    <span class="wt-metric-value" id="live-ask" style="font-family:monospace">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Spread</span>
+                                    <span class="wt-metric-value" id="live-spread">—</span>
+                                </div>
+                            </div>
+                            <div class="wt-card">
+                                <div class="wt-card-header"><i class="bi bi-lightning-charge"></i> Model Signal</div>
+                                <div style="text-align:center;padding:0.5rem 0">
+                                    <div id="live-signal-badge" class="wt-signal-badge hold">HOLD</div>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">Confidence</span>
+                                    <span class="wt-metric-value" id="live-confidence">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">TF Alignment</span>
+                                    <span class="wt-metric-value" id="live-alignment">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">SL (pips)</span>
+                                    <span class="wt-metric-value" id="live-sl">—</span>
+                                </div>
+                                <div class="wt-metric">
+                                    <span class="wt-metric-label">TP (pips)</span>
+                                    <span class="wt-metric-value" id="live-tp">—</span>
+                                </div>
+                                <div style="font-size:0.7rem;color:var(--wt-text-muted);padding:0.25rem 0.5rem" id="live-signal-time">—</div>
+                            </div>
+                        </div>
+                    </div>
 
-            <!-- Duration Tab -->
-            <div id="tab-duration" class="wt-tab-pane">
-                <div class="wt-chart-grid">
-                    <div id="chart-duration" class="plotly-chart full-width"></div>
-                </div>
-            </div>
+                    <!-- Open Positions Tab -->
+                    <div id="tab-live-positions" class="wt-live-tab-pane">
+                        <div id="live-positions-list" style="font-size:0.8rem">
+                            <div class="wt-empty-state" style="padding:1rem">
+                                <p>No open positions</p>
+                            </div>
+                        </div>
+                    </div>
 
-            <!-- Friction Tab -->
-            <div id="tab-friction" class="wt-tab-pane">
-                <div class="wt-chart-grid">
-                    <div id="chart-friction-equity" class="plotly-chart"></div>
-                    <div id="chart-friction-pie" class="plotly-chart"></div>
+                    <!-- Trade History Tab -->
+                    <div id="tab-live-history" class="wt-live-tab-pane">
+                        <div class="wt-empty-state" style="padding:1rem">
+                            <p>Connect to OANDA to view trade history</p>
+                        </div>
+                    </div>
+
+                    <!-- Signals Tab -->
+                    <div id="tab-live-signals" class="wt-live-tab-pane">
+                        <div id="live-signals-log" class="wt-signals-log">
+                            <div class="wt-empty-state" style="padding:1rem">
+                                <p>Enable live mode to see model signals</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </div><!-- /central-panel -->
     </div>
 
     <!-- ─── Right Sidebar: Metrics ─────────────────────────────────────── -->
-    <div class="wt-sidebar-right">
+    <div class="wt-sidebar-right" id="sidebar-right">
 
-        <!-- ── Live Panel (hidden by default, shown when live toggle is on) ── -->
+        <!-- ── Live Status (compact, shown when live) ── -->
         <div id="live-panel" style="display:none">
             <div class="wt-card-header">
                 <i class="bi bi-broadcast"></i> Live Feed
                 <span id="live-status-dot" class="wt-status-dot offline"></span>
-            </div>
-
-            <!-- Account -->
-            <div class="wt-card">
-                <div class="wt-card-header"><i class="bi bi-bank"></i> OANDA Account</div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Balance</span>
-                    <span class="wt-metric-value" id="live-balance">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">NAV</span>
-                    <span class="wt-metric-value" id="live-nav">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Unrealised P&L</span>
-                    <span class="wt-metric-value" id="live-unreal-pnl">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Open Trades</span>
-                    <span class="wt-metric-value" id="live-open-trades">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Market</span>
-                    <span class="wt-metric-value" id="live-market-status">—</span>
-                </div>
-            </div>
-
-            <!-- Live Price -->
-            <div class="wt-card">
-                <div class="wt-card-header"><i class="bi bi-currency-exchange"></i> Price</div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Bid</span>
-                    <span class="wt-metric-value" id="live-bid" style="font-family:monospace">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Ask</span>
-                    <span class="wt-metric-value" id="live-ask" style="font-family:monospace">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Spread</span>
-                    <span class="wt-metric-value" id="live-spread">—</span>
-                </div>
-            </div>
-
-            <!-- Latest Signal -->
-            <div class="wt-card">
-                <div class="wt-card-header"><i class="bi bi-lightning-charge"></i> Model Signal</div>
-                <div style="text-align:center;padding:0.5rem 0">
-                    <div id="live-signal-badge" class="wt-signal-badge hold">HOLD</div>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">Confidence</span>
-                    <span class="wt-metric-value" id="live-confidence">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">TF Alignment</span>
-                    <span class="wt-metric-value" id="live-alignment">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">SL (pips)</span>
-                    <span class="wt-metric-value" id="live-sl">—</span>
-                </div>
-                <div class="wt-metric">
-                    <span class="wt-metric-label">TP (pips)</span>
-                    <span class="wt-metric-value" id="live-tp">—</span>
-                </div>
-                <div style="font-size:0.7rem;color:var(--wt-text-muted);padding:0.25rem 0.5rem" id="live-signal-time">—</div>
-            </div>
-
-            <!-- Open Positions -->
-            <div class="wt-card">
-                <div class="wt-card-header"><i class="bi bi-box-arrow-in-right"></i> Open Positions</div>
-                <div id="live-positions-list" style="font-size:0.75rem">
-                    <div class="wt-empty-state" style="padding:0.5rem">No open positions</div>
-                </div>
             </div>
         </div>
 
@@ -426,11 +549,16 @@
     </div><!-- /backtest-panel -->
     </div>
 </div>
+
+<!-- ═══ Chart-Trade Tooltip Overlay ══════════════════════════════════════ -->
+<div id="chart-trade-tooltip" class="wt-chart-trade-tooltip" style="display:none"></div>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/chart-manager.js') }}"></script>
 <script src="{{ url_for('static', filename='js/analytics-charts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/trade-log.js') }}"></script>
+<script src="{{ url_for('static', filename='js/backtest-history.js') }}"></script>
 <script src="{{ url_for('static', filename='js/config-panel.js') }}"></script>
 <script src="{{ url_for('static', filename='js/live-panel.js') }}"></script>
 {% endblock %}

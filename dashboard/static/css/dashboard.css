@@ -122,13 +122,35 @@ body {
     grid-template-rows: 1fr;
     height: calc(100vh - 52px);
     gap: 0;
+    transition: grid-template-columns 0.3s ease;
+}
+
+.wt-layout.left-collapsed {
+    grid-template-columns: 0px 1fr 280px;
+}
+
+.wt-layout.right-collapsed {
+    grid-template-columns: 300px 1fr 0px;
+}
+
+.wt-layout.left-collapsed.right-collapsed {
+    grid-template-columns: 0px 1fr 0px;
 }
 
 .wt-sidebar-left {
     background: var(--wt-bg-secondary);
     border-right: 1px solid var(--wt-border);
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 1rem;
+    transition: padding 0.3s ease, opacity 0.3s ease;
+}
+
+.wt-layout.left-collapsed .wt-sidebar-left {
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+    border-right: none;
 }
 
 .wt-main {
@@ -141,7 +163,43 @@ body {
     background: var(--wt-bg-secondary);
     border-left: 1px solid var(--wt-border);
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 1rem;
+    transition: padding 0.3s ease, opacity 0.3s ease;
+}
+
+.wt-layout.right-collapsed .wt-sidebar-right {
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+    border-left: none;
+}
+
+/* ── Sidebar Toggle Buttons ─────────────────────────────────────────────── */
+
+.wt-sidebar-toggle {
+    background: transparent;
+    border: 1px solid var(--wt-border);
+    color: var(--wt-text-muted);
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+}
+
+.wt-sidebar-toggle:hover {
+    color: var(--wt-text);
+    border-color: var(--wt-blue);
+    background: var(--wt-blue-dim);
+}
+
+.wt-sidebar-toggle.active {
+    color: var(--wt-blue);
+    border-color: var(--wt-blue);
+    background: var(--wt-blue-dim);
 }
 
 /* ── Cards ──────────────────────────────────────────────────────────────── */
@@ -229,8 +287,8 @@ body {
 /* ── Chart Containers ───────────────────────────────────────────────────── */
 
 .wt-chart-area {
-    flex: 1;
-    min-height: 350px;
+    flex: 1 1 50%;
+    min-height: 200px;
     position: relative;
     border-bottom: 1px solid var(--wt-border);
 }
@@ -240,14 +298,104 @@ body {
     height: 100%;
 }
 
+/* ── Drag Handle ────────────────────────────────────────────────────────── */
+
+.wt-drag-handle {
+    height: 8px;
+    background: var(--wt-bg-secondary);
+    cursor: row-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-top: 1px solid var(--wt-border);
+    border-bottom: 1px solid var(--wt-border);
+    transition: background 0.15s;
+    flex-shrink: 0;
+}
+
+.wt-drag-handle:hover,
+.wt-drag-handle.dragging {
+    background: var(--wt-blue-dim);
+}
+
+.wt-drag-handle-bar {
+    width: 40px;
+    height: 3px;
+    background: var(--wt-border-light);
+    border-radius: 2px;
+}
+
+.wt-drag-handle:hover .wt-drag-handle-bar {
+    background: var(--wt-blue);
+}
+
+/* ── Central Panel ──────────────────────────────────────────────────────── */
+
+.wt-central-panel {
+    flex: 1 1 50%;
+    min-height: 150px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.wt-central-panel.collapsed {
+    min-height: 0;
+    flex: 0 0 0px;
+}
+
+/* ── Top-Level Tabs (Backtest / Live) ───────────────────────────────────── */
+
+.wt-top-tabs {
+    display: flex;
+    gap: 0;
+    background: var(--wt-bg-primary);
+    border-bottom: 2px solid var(--wt-border);
+    padding: 0 0.75rem;
+    flex-shrink: 0;
+}
+
+.wt-top-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: var(--wt-text-muted);
+    padding: 0.5rem 1.2rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+    margin-bottom: -2px;
+}
+
+.wt-top-tab:hover { color: var(--wt-text); }
+
+.wt-top-tab.active {
+    color: var(--wt-blue);
+    border-bottom-color: var(--wt-blue);
+    background: var(--wt-bg-secondary);
+}
+
+.wt-top-tab-pane {
+    display: none;
+    flex: 1;
+    overflow: hidden;
+    flex-direction: column;
+}
+
+.wt-top-tab-pane.active {
+    display: flex;
+}
+
 .wt-analytics-area {
     flex: 1;
-    min-height: 300px;
+    min-height: 0;
     overflow-y: auto;
     padding: 0.75rem;
 }
 
-/* ── Analytics Tabs ─────────────────────────────────────────────────────── */
+/* ── Analytics Sub-Tabs ─────────────────────────────────────────────────── */
 
 .wt-tabs {
     display: flex;
@@ -694,4 +842,261 @@ body {
     0% { transform: scale(1); }
     50% { transform: scale(1.15); }
     100% { transform: scale(1); }
+}
+
+/* ═══ Trade Log Table ══════════════════════════════════════════════════════ */
+
+.wt-trade-log-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.wt-trade-log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    gap: 1rem;
+    flex-shrink: 0;
+}
+
+.wt-trade-log-header span {
+    font-size: 0.8rem;
+    color: var(--wt-text-muted);
+    white-space: nowrap;
+}
+
+.wt-trade-log-search {
+    background: var(--wt-bg-input);
+    border: 1px solid var(--wt-border);
+    color: var(--wt-text);
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    width: 200px;
+}
+
+.wt-trade-log-search:focus {
+    border-color: var(--wt-blue);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--wt-blue-dim);
+}
+
+.wt-trade-log-table-wrap {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: auto;
+}
+
+.wt-trade-log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.wt-trade-log-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.wt-trade-log-table th {
+    background: var(--wt-bg-secondary);
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 0.5rem 0.4rem;
+    border-bottom: 1px solid var(--wt-border);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.wt-trade-log-table th:hover {
+    color: var(--wt-blue);
+}
+
+.wt-trade-log-table th.sorted-asc::after { content: ' ▲'; color: var(--wt-blue); }
+.wt-trade-log-table th.sorted-desc::after { content: ' ▼'; color: var(--wt-blue); }
+
+.wt-trade-log-table td {
+    padding: 0.35rem 0.4rem;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.3);
+    white-space: nowrap;
+}
+
+.wt-trade-log-table tr {
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.wt-trade-log-table tbody tr:hover {
+    background: rgba(88, 166, 255, 0.06);
+}
+
+.wt-trade-log-table tbody tr.winner {
+    color: var(--wt-text);
+}
+
+.wt-trade-log-table tbody tr.loser {
+    color: var(--wt-text);
+}
+
+.wt-trade-log-table tbody tr.winner td:nth-child(10) { color: var(--wt-green); font-weight: 600; }
+.wt-trade-log-table tbody tr.loser td:nth-child(10) { color: var(--wt-red); font-weight: 600; }
+
+.wt-trade-log-table tbody tr.highlighted {
+    background: var(--wt-blue-dim) !important;
+    outline: 1px solid var(--wt-blue);
+}
+
+.wt-trade-log-table .dir-buy { color: var(--wt-green); font-weight: 600; }
+.wt-trade-log-table .dir-sell { color: var(--wt-red); font-weight: 600; }
+
+/* ═══ Saved Backtests ══════════════════════════════════════════════════════ */
+
+.wt-saved-backtests-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.wt-saved-header {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.5rem 0;
+    flex-shrink: 0;
+}
+
+.wt-btn-small {
+    background: var(--wt-bg-input);
+    border: 1px solid var(--wt-border);
+    color: var(--wt-text);
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.wt-btn-small:hover {
+    border-color: var(--wt-blue);
+    color: var(--wt-blue);
+}
+
+.wt-saved-list {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.wt-saved-entry {
+    background: var(--wt-bg-card);
+    border: 1px solid var(--wt-border);
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.wt-saved-entry:hover {
+    border-color: var(--wt-blue);
+    background: rgba(88, 166, 255, 0.04);
+}
+
+.wt-saved-entry-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.4rem;
+}
+
+.wt-saved-entry-id {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--wt-blue);
+}
+
+.wt-saved-entry-date {
+    font-size: 0.7rem;
+    color: var(--wt-text-muted);
+}
+
+.wt-saved-entry-metrics {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.72rem;
+}
+
+.wt-saved-entry-metrics span {
+    color: var(--wt-text-muted);
+}
+
+.wt-saved-entry-metrics b {
+    color: var(--wt-text);
+}
+
+.wt-saved-entry-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+}
+
+/* ═══ Chart-Trade Tooltip ══════════════════════════════════════════════════ */
+
+.wt-chart-trade-tooltip {
+    position: fixed;
+    z-index: 1000;
+    background: var(--wt-bg-card);
+    border: 1px solid var(--wt-border);
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.78rem;
+    color: var(--wt-text);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    max-width: 300px;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.wt-chart-trade-tooltip .tooltip-dir {
+    font-weight: 700;
+    margin-bottom: 0.2rem;
+}
+
+.wt-chart-trade-tooltip .tooltip-dir.buy { color: var(--wt-green); }
+.wt-chart-trade-tooltip .tooltip-dir.sell { color: var(--wt-red); }
+
+.wt-chart-trade-tooltip .tooltip-pnl {
+    font-weight: 600;
+}
+
+.wt-chart-trade-tooltip .tooltip-pnl.positive { color: var(--wt-green); }
+.wt-chart-trade-tooltip .tooltip-pnl.negative { color: var(--wt-red); }
+
+/* ═══ Live Account Grid ════════════════════════════════════════════════════ */
+
+.wt-live-account-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 0.75rem;
+}
+
+.wt-live-tab-pane {
+    display: none;
+}
+
+.wt-live-tab-pane.active {
+    display: block;
+}
+
+.wt-signals-log {
+    font-size: 0.78rem;
 }

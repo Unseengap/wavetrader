@@ -34,6 +34,11 @@ async function enableLiveMode() {
     document.getElementById('connection-status').innerHTML =
         '<i class="bi bi-circle-fill" style="color:var(--wt-yellow);font-size:6px;vertical-align:middle"></i> Connecting…';
 
+    // Switch to Live Trading hub tab
+    if (typeof switchToTopTab === 'function') {
+        switchToTopTab('live-hub');
+    }
+
     const pair = document.getElementById('nav-pair-select').value || 'GBP/JPY';
     const tf = document.getElementById('nav-tf-select').value || '15min';
 
@@ -73,6 +78,11 @@ function disableLiveMode() {
     document.getElementById('backtest-panel').style.display = 'block';
     document.getElementById('connection-status').innerHTML =
         '<i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i> Dashboard Active';
+
+    // Switch back to Backtest hub tab
+    if (typeof switchToTopTab === 'function') {
+        switchToTopTab('backtest-hub');
+    }
 
     // Reload historical candles
     const pair = document.getElementById('nav-pair-select').value || 'GBP/JPY';
