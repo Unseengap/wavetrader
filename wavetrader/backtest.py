@@ -270,29 +270,36 @@ class BacktestEngine:
 
 def run_backtest(
     model:     Any,
-    df:        pd.DataFrame,
-    config:    SignalConfig,
+    df:        Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+    config:    Union[SignalConfig, 'MTFConfig'],
     bt_config: Optional[BacktestConfig] = None,
     device:    Optional[torch.device]   = None,
 ) -> BacktestResults:
     """
     Run a full bar-by-bar backtest on `df` using `model` for signal generation.
-
-    The model is run in inference mode (no gradients).  One position at a time.
-    Each bar: update open trade → generate signal if flat → open if above threshold.
+    Supports both single-timeframe and multi-timeframe backtesting.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     bt_config = bt_config or BacktestConfig()
     engine    = BacktestEngine(bt_config)
-    dataset   = ForexDataset(df, lookback=config.lookback, lookahead=10, pair=config.pair)
+    
+    if hasattr(config, 'timeframes'):
+        from .dataset import MTFForexDataset
+        dataset = MTFForexDataset(df, config, lookahead=10, pair=config.pair)
+        base_df = dataset.prepared[dataset.entry_tf]
+        is_mtf = True
+    else:
+        dataset = ForexDataset(df, lookback=config.lookback, lookahead=10, pair=config.pair)
+        base_df = dataset.df
+        is_mtf = False
 
     model = model.to(device)
     model.eval()
 
     print("\n" + "=" * 70)
-    print(f"BACKTEST: {config.pair}  {config.timeframe}")
+    print(f"BACKTEST: {config.pair}  {getattr(config, 'timeframe', getattr(config, 'timeframes', 'MTF'))}")
     print(f"Initial Balance : ${bt_config.initial_balance:,.2f}")
     print(f"Risk per Trade  : {bt_config.risk_per_trade:.1%}")
     print("=" * 70)
@@ -300,7 +307,7 @@ def run_backtest(
     with torch.no_grad():
         for i in range(len(dataset)):
             actual      = dataset.valid_indices[i]
-            current_bar = dataset.df.iloc[actual]
+            current_bar = base_df.iloc[actual]
             timestamp   = (
                 current_bar["date"]
                 if "date" in current_bar.index
@@ -320,11 +327,18 @@ def run_backtest(
 
             if engine.open_trade is None:
                 sample = dataset[i]
-                model_input = {
-                    k: v.unsqueeze(0).to(device)
-                    for k, v in sample.items()
-                    if k != "label"
-                }
+                if is_mtf:
+                    model_input = {
+                        k: {feat: v.unsqueeze(0).to(device) for feat, v in val.items() if isinstance(v, torch.Tensor)} if isinstance(val, dict) else val.to(device) if isinstance(val, torch.Tensor) else val
+                        for k, val in sample.items() if k != "label"
+                    }
+                else:
+                    model_input = {
+                        k: v.unsqueeze(0).to(device)
+                        for k, v in sample.items()
+                        if k != "label"
+                    }
+                
                 out      = model(model_input)
                 sig_idx  = out["signal_logits"].argmax(-1).item()
                 conf     = out["confidence"].item()
@@ -356,7 +370,7 @@ def run_backtest(
                 )
 
     if engine.open_trade:
-        last = dataset.df.iloc[-1]
+        last = base_df.iloc[-1]
         engine.close_position(
             last["close"],
             last["date"] if "date" in last.index else datetime.utcnow(),
