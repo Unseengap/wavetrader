@@ -1,0 +1,16 @@
+# WaveTrader — Python dependencies
+# Core
+torch>=2.2.0
+numpy>=1.24.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# Data
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Optional: faster data download
+lzma
+
+# Production monitoring
+# (Telegram alerts use requests — no extra deps)

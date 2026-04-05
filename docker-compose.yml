@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  wavetrader:
+    build: .
+    image: wavetrader:latest
+    container_name: wavetrader-live
+    restart: unless-stopped
+    volumes:
+      - ./data:/data:rw
+      - ./checkpoints:/checkpoints:rw
+    env_file:
+      - .env
+    environment:
+      - CHECKPOINT_DIR=/data/checkpoints
+      - CHECKPOINT_INTERVAL=100
+    depends_on:
+      - redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: wavetrader-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --save 60 1000
+    ports:
+      - "127.0.0.1:6379:6379"
+
+volumes:
+  redis-data:

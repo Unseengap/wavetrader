@@ -90,3 +90,10 @@ from .utils import (
     print_equity_chart,
     walk_forward_splits_calendar,
 )
+
+# Live trading (lazy — only imported when used)
+from .copytrade import CopyTradeManager, UserAccount, UserRegistry
+from .monitor import Monitor, MonitorConfig
+from .oanda import OANDAClient, OANDAConfig
+from .state import LiveState, StateManager
+from .streaming import StreamingEngine
