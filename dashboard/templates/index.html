@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+
+{% block title %}WaveTrader Dashboard{% endblock %}
+
+{% block body %}
+<!-- Toast Container -->
+<div id="toast-container" class="wt-toast-container"></div>
+
+<!-- ═══ Navbar ══════════════════════════════════════════════════════════════ -->
+<nav class="wt-navbar">
+    <div class="wt-brand">
+        <i class="bi bi-activity"></i> WaveTrader
+    </div>
+
+    <!-- Pair Selector -->
+    <div class="wt-nav-controls">
+        <select id="nav-pair-select">
+            <option value="GBP/JPY">GBP/JPY</option>
+        </select>
+        <select id="nav-tf-select" style="display:none">
+            <option value="1h">1H</option>
+        </select>
+    </div>
+
+    <!-- Timeframe Buttons -->
+    <div class="wt-tf-group">
+        <button class="wt-tf-btn" data-tf="15min">15m</button>
+        <button class="wt-tf-btn active" data-tf="1h">1H</button>
+        <button class="wt-tf-btn" data-tf="4h">4H</button>
+        <button class="wt-tf-btn" data-tf="1d">1D</button>
+    </div>
+
+    <div style="flex:1"></div>
+
+    <!-- Status -->
+    <div style="font-size:0.78rem;color:var(--wt-text-muted)">
+        <i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i>
+        Dashboard Active
+    </div>
+</nav>
+
+<!-- ═══ Main Layout ════════════════════════════════════════════════════════ -->
+<div class="wt-layout">
+
+    <!-- ─── Left Sidebar: Config Panel ─────────────────────────────────── -->
+    <div class="wt-sidebar-left">
+        <div class="wt-card-header">
+            <i class="bi bi-sliders"></i> Backtest Configuration
+        </div>
+
+        <!-- Capital & Risk -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Capital & Risk</div>
+
+            <div class="wt-field">
+                <label for="cfg-pair">Currency Pair</label>
+                <select id="cfg-pair">
+                    <option value="GBP/JPY">GBP/JPY</option>
+                </select>
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-initial-balance">Initial Balance ($)</label>
+                <input type="number" id="cfg-initial-balance" value="25000" min="1000" step="1000">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    Risk per Trade
+                    <span class="wt-range-value" data-for="cfg-risk-per-trade" data-suffix="%">1%</span>
+                </label>
+                <input type="range" id="cfg-risk-per-trade" min="0.5" max="5" step="0.25" value="1">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-leverage">Leverage</label>
+                <input type="number" id="cfg-leverage" value="30" min="1" max="500">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    Min Confidence
+                    <span class="wt-range-value" data-for="cfg-min-confidence" data-suffix="%">55%</span>
+                </label>
+                <input type="range" id="cfg-min-confidence" min="30" max="95" step="5" value="55">
+            </div>
+        </div>
+
+        <!-- Spread & Costs -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Spread & Costs</div>
+
+            <div class="wt-field">
+                <label for="cfg-spread-pips">Base Spread (pips)</label>
+                <input type="number" id="cfg-spread-pips" value="3.0" min="0.1" step="0.1">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-commission">Commission / Lot ($)</label>
+                <input type="number" id="cfg-commission" value="7.0" min="0" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-pip-value">Pip Value ($)</label>
+                <input type="number" id="cfg-pip-value" value="10.0" min="0.1" step="0.1">
+            </div>
+        </div>
+
+        <!-- Circuit Breakers -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Circuit Breakers</div>
+
+            <div class="wt-field">
+                <label for="cfg-atr-halt">ATR Halt Multiplier</label>
+                <input type="number" id="cfg-atr-halt" value="3.0" min="1" max="10" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    DD Risk Reduction
+                    <span class="wt-range-value" data-for="cfg-dd-threshold" data-suffix="%">10%</span>
+                </label>
+                <input type="range" id="cfg-dd-threshold" min="2" max="25" step="1" value="10">
+            </div>
+        </div>
+
+        <!-- Friction Simulation -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Friction Model</div>
+
+            <div class="wt-field">
+                <label for="cfg-slip-min">Slippage Min (pips)</label>
+                <input type="number" id="cfg-slip-min" value="0.5" min="0" step="0.1">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-slip-max">Slippage Max (pips)</label>
+                <input type="number" id="cfg-slip-max" value="3.0" min="0" step="0.1">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-spread-offhours">Off-hours Extra Spread</label>
+                <input type="number" id="cfg-spread-offhours" value="2.5" min="0" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    News Spike Prob
+                    <span class="wt-range-value" data-for="cfg-news-prob" data-suffix="%">5%</span>
+                </label>
+                <input type="range" id="cfg-news-prob" min="0" max="20" step="1" value="5">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-news-extra">News Spike Extra (pips)</label>
+                <input type="number" id="cfg-news-extra" value="5.0" min="0" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label for="cfg-lot-cap">Max Lot Size</label>
+                <input type="number" id="cfg-lot-cap" value="2.0" min="0.1" step="0.1">
+            </div>
+        </div>
+
+        <!-- Buttons -->
+        <button id="btn-run-backtest" class="wt-btn-primary" style="margin-bottom:0.5rem">
+            <span class="btn-text"><i class="bi bi-play-fill"></i> Run Backtest</span>
+            <div class="wt-spinner"></div>
+        </button>
+        <button id="btn-reset-defaults" class="wt-btn-secondary">
+            <i class="bi bi-arrow-counterclockwise"></i> Reset to Defaults
+        </button>
+    </div>
+
+    <!-- ─── Center: Charts ─────────────────────────────────────────────── -->
+    <div class="wt-main">
+        <!-- Price Chart Legend -->
+        <div class="wt-legend">
+            <div class="wt-legend-item"><div class="wt-legend-dot buy"></div> Buy Entry</div>
+            <div class="wt-legend-item"><div class="wt-legend-dot sell"></div> Sell Entry</div>
+            <div class="wt-legend-item"><div class="wt-legend-dot tp"></div> Take Profit</div>
+            <div class="wt-legend-item"><div class="wt-legend-dot sl"></div> Stop Loss</div>
+        </div>
+
+        <!-- TradingView Price Chart -->
+        <div class="wt-chart-area">
+            <div id="priceChart"></div>
+        </div>
+
+        <!-- Analytics Tabs -->
+        <div class="wt-tabs">
+            <button class="wt-tab active" data-tab="equity">
+                <i class="bi bi-graph-up"></i> Equity
+            </button>
+            <button class="wt-tab" data-tab="pnl">
+                <i class="bi bi-bar-chart"></i> PnL
+            </button>
+            <button class="wt-tab" data-tab="sessions">
+                <i class="bi bi-clock"></i> Sessions
+            </button>
+            <button class="wt-tab" data-tab="duration">
+                <i class="bi bi-hourglass-split"></i> Duration
+            </button>
+            <button class="wt-tab" data-tab="friction">
+                <i class="bi bi-gear"></i> Friction
+            </button>
+        </div>
+
+        <!-- Analytics Chart Panes -->
+        <div class="wt-analytics-area">
+            <!-- Equity Tab -->
+            <div id="tab-equity" class="wt-tab-pane active">
+                <div class="wt-chart-grid">
+                    <div id="chart-equity-curve" class="plotly-chart full-width"></div>
+                    <div id="chart-trade-pnl" class="plotly-chart full-width"></div>
+                    <div id="chart-rolling-wr" class="plotly-chart full-width"></div>
+                </div>
+            </div>
+
+            <!-- PnL Tab -->
+            <div id="tab-pnl" class="wt-tab-pane">
+                <div class="wt-chart-grid">
+                    <div id="chart-monthly-pnl" class="plotly-chart full-width"></div>
+                    <div id="chart-exit-reasons" class="plotly-chart full-width"></div>
+                </div>
+            </div>
+
+            <!-- Sessions Tab -->
+            <div id="tab-sessions" class="wt-tab-pane">
+                <div class="wt-chart-grid">
+                    <div id="chart-hourly-trades" class="plotly-chart"></div>
+                    <div id="chart-hourly-pnl" class="plotly-chart"></div>
+                    <div id="chart-daily-pnl" class="plotly-chart"></div>
+                    <div id="chart-daily-wr" class="plotly-chart"></div>
+                </div>
+            </div>
+
+            <!-- Duration Tab -->
+            <div id="tab-duration" class="wt-tab-pane">
+                <div class="wt-chart-grid">
+                    <div id="chart-duration" class="plotly-chart full-width"></div>
+                </div>
+            </div>
+
+            <!-- Friction Tab -->
+            <div id="tab-friction" class="wt-tab-pane">
+                <div class="wt-chart-grid">
+                    <div id="chart-friction-equity" class="plotly-chart"></div>
+                    <div id="chart-friction-pie" class="plotly-chart"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ─── Right Sidebar: Metrics ─────────────────────────────────────── -->
+    <div class="wt-sidebar-right">
+        <div class="wt-card-header">
+            <i class="bi bi-speedometer2"></i> Performance
+        </div>
+
+        <!-- Big Stat Cards -->
+        <div class="wt-stat-grid">
+            <div class="wt-stat">
+                <div class="wt-stat-value" id="stat-total-trades">—</div>
+                <div class="wt-stat-label">Total Trades</div>
+            </div>
+            <div class="wt-stat">
+                <div class="wt-stat-value" id="stat-win-rate" style="color:var(--wt-green)">—</div>
+                <div class="wt-stat-label">Win Rate</div>
+            </div>
+            <div class="wt-stat">
+                <div class="wt-stat-value" id="stat-profit-factor" style="color:var(--wt-blue)">—</div>
+                <div class="wt-stat-label">Profit Factor</div>
+            </div>
+            <div class="wt-stat">
+                <div class="wt-stat-value" id="stat-sharpe" style="color:var(--wt-purple)">—</div>
+                <div class="wt-stat-label">Sharpe Ratio</div>
+            </div>
+        </div>
+
+        <!-- Detailed Metrics -->
+        <div class="wt-card">
+            <div class="wt-card-header">
+                <i class="bi bi-cash-stack"></i> Balance
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Final Balance</span>
+                <span class="wt-metric-value" id="metric-final-balance">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Total P&L</span>
+                <span class="wt-metric-value" id="metric-total-pnl">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Return</span>
+                <span class="wt-metric-value" id="metric-return">—</span>
+            </div>
+        </div>
+
+        <div class="wt-card">
+            <div class="wt-card-header">
+                <i class="bi bi-shield-exclamation"></i> Risk
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Max Drawdown</span>
+                <span class="wt-metric-value" id="metric-max-dd">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Winning Trades</span>
+                <span class="wt-metric-value" id="metric-winning" style="color:var(--wt-green)">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Losing Trades</span>
+                <span class="wt-metric-value" id="metric-losing" style="color:var(--wt-red)">—</span>
+            </div>
+        </div>
+
+        <!-- Recent Trades (mini table) -->
+        <div class="wt-card">
+            <div class="wt-card-header">
+                <i class="bi bi-list-ul"></i> Recent Trades
+            </div>
+            <div id="recent-trades-list" style="font-size:0.75rem">
+                <div class="wt-empty-state" style="padding:1rem">
+                    <p>Run a backtest to see trade results</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chart-manager.js') }}"></script>
+<script src="{{ url_for('static', filename='js/analytics-charts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/config-panel.js') }}"></script>
+{% endblock %}

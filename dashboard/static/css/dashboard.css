@@ -1,0 +1,582 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   WaveTrader Dashboard — Dark Trading Theme
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+    --wt-bg-primary: #0d1117;
+    --wt-bg-secondary: #161b22;
+    --wt-bg-card: #1c2128;
+    --wt-bg-input: #21262d;
+    --wt-border: #30363d;
+    --wt-border-light: #3d444d;
+    --wt-text: #e6edf3;
+    --wt-text-muted: #8b949e;
+    --wt-green: #3fb950;
+    --wt-green-dim: rgba(63, 185, 80, 0.15);
+    --wt-red: #f85149;
+    --wt-red-dim: rgba(248, 81, 73, 0.15);
+    --wt-blue: #58a6ff;
+    --wt-blue-dim: rgba(88, 166, 255, 0.15);
+    --wt-orange: #d29922;
+    --wt-purple: #bc8cff;
+    --wt-cyan: #39d2c0;
+    --wt-accent-gradient: linear-gradient(135deg, #58a6ff 0%, #bc8cff 100%);
+}
+
+* { box-sizing: border-box; }
+
+body {
+    background: var(--wt-bg-primary);
+    color: var(--wt-text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    margin: 0;
+    overflow-x: hidden;
+}
+
+/* ── Navbar ─────────────────────────────────────────────────────────────── */
+
+.wt-navbar {
+    background: var(--wt-bg-secondary);
+    border-bottom: 1px solid var(--wt-border);
+    padding: 0.5rem 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    height: 52px;
+    z-index: 100;
+}
+
+.wt-brand {
+    font-weight: 700;
+    font-size: 1.15rem;
+    background: var(--wt-accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    white-space: nowrap;
+}
+
+.wt-brand i {
+    -webkit-text-fill-color: var(--wt-blue);
+    margin-right: 0.4rem;
+}
+
+.wt-nav-controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.wt-nav-controls select {
+    background: var(--wt-bg-input);
+    border: 1px solid var(--wt-border);
+    color: var(--wt-text);
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+}
+
+.wt-nav-controls select:focus {
+    border-color: var(--wt-blue);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--wt-blue-dim);
+}
+
+/* ── TF Buttons ─────────────────────────────────────────────────────────── */
+
+.wt-tf-group {
+    display: flex;
+    gap: 2px;
+    background: var(--wt-bg-input);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.wt-tf-btn {
+    background: transparent;
+    border: none;
+    color: var(--wt-text-muted);
+    padding: 0.25rem 0.65rem;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.wt-tf-btn:hover {
+    color: var(--wt-text);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.wt-tf-btn.active {
+    background: var(--wt-blue);
+    color: #fff;
+}
+
+/* ── Layout Grid ────────────────────────────────────────────────────────── */
+
+.wt-layout {
+    display: grid;
+    grid-template-columns: 300px 1fr 280px;
+    grid-template-rows: 1fr;
+    height: calc(100vh - 52px);
+    gap: 0;
+}
+
+.wt-sidebar-left {
+    background: var(--wt-bg-secondary);
+    border-right: 1px solid var(--wt-border);
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+.wt-main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.wt-sidebar-right {
+    background: var(--wt-bg-secondary);
+    border-left: 1px solid var(--wt-border);
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────── */
+
+.wt-card {
+    background: var(--wt-bg-card);
+    border: 1px solid var(--wt-border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.wt-card-header {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.wt-card-header i {
+    font-size: 0.85rem;
+}
+
+/* ── Metrics ────────────────────────────────────────────────────────────── */
+
+.wt-metric {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+}
+
+.wt-metric:last-child { border-bottom: none; }
+
+.wt-metric-label {
+    font-size: 0.78rem;
+    color: var(--wt-text-muted);
+}
+
+.wt-metric-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.wt-metric-value.positive { color: var(--wt-green); }
+.wt-metric-value.negative { color: var(--wt-red); }
+
+/* Big stat cards */
+.wt-stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.wt-stat {
+    background: var(--wt-bg-card);
+    border: 1px solid var(--wt-border);
+    border-radius: 8px;
+    padding: 0.65rem 0.75rem;
+    text-align: center;
+}
+
+.wt-stat-value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.wt-stat-label {
+    font-size: 0.7rem;
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-top: 0.15rem;
+}
+
+/* ── Chart Containers ───────────────────────────────────────────────────── */
+
+.wt-chart-area {
+    flex: 1;
+    min-height: 350px;
+    position: relative;
+    border-bottom: 1px solid var(--wt-border);
+}
+
+.wt-chart-area #priceChart {
+    width: 100%;
+    height: 100%;
+}
+
+.wt-analytics-area {
+    flex: 1;
+    min-height: 300px;
+    overflow-y: auto;
+    padding: 0.75rem;
+}
+
+/* ── Analytics Tabs ─────────────────────────────────────────────────────── */
+
+.wt-tabs {
+    display: flex;
+    gap: 0;
+    background: var(--wt-bg-secondary);
+    border-bottom: 1px solid var(--wt-border);
+    padding: 0 0.75rem;
+    overflow-x: auto;
+}
+
+.wt-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--wt-text-muted);
+    padding: 0.6rem 1rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+
+.wt-tab:hover { color: var(--wt-text); }
+
+.wt-tab.active {
+    color: var(--wt-blue);
+    border-bottom-color: var(--wt-blue);
+}
+
+.wt-tab-pane {
+    display: none;
+}
+
+.wt-tab-pane.active {
+    display: block;
+}
+
+.wt-chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+}
+
+.wt-chart-grid .plotly-chart {
+    background: var(--wt-bg-card);
+    border: 1px solid var(--wt-border);
+    border-radius: 8px;
+    padding: 0.5rem;
+    min-height: 280px;
+}
+
+.wt-chart-grid .plotly-chart.full-width {
+    grid-column: 1 / -1;
+}
+
+/* ── Config Panel (Left Sidebar) ────────────────────────────────────────── */
+
+.wt-config-section {
+    margin-bottom: 1rem;
+}
+
+.wt-config-section-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--wt-border);
+}
+
+.wt-field {
+    margin-bottom: 0.6rem;
+}
+
+.wt-field label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--wt-text-muted);
+    margin-bottom: 0.2rem;
+}
+
+.wt-field input,
+.wt-field select {
+    width: 100%;
+    background: var(--wt-bg-input);
+    border: 1px solid var(--wt-border);
+    color: var(--wt-text);
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.wt-field input:focus,
+.wt-field select:focus {
+    border-color: var(--wt-blue);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--wt-blue-dim);
+}
+
+.wt-field input[type="range"] {
+    padding: 0;
+    -webkit-appearance: none;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.wt-field input[type="range"]::-webkit-slider-track {
+    height: 4px;
+    background: var(--wt-border);
+    border-radius: 2px;
+}
+
+.wt-field input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    background: var(--wt-blue);
+    border-radius: 50%;
+    margin-top: -5px;
+    cursor: pointer;
+}
+
+.wt-range-value {
+    font-size: 0.78rem;
+    color: var(--wt-blue);
+    font-weight: 600;
+    float: right;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+.wt-btn-primary {
+    width: 100%;
+    background: var(--wt-blue);
+    color: #fff;
+    border: none;
+    padding: 0.6rem 1rem;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+}
+
+.wt-btn-primary:hover {
+    background: #4a9eff;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.3);
+}
+
+.wt-btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.wt-btn-secondary {
+    width: 100%;
+    background: transparent;
+    color: var(--wt-text-muted);
+    border: 1px solid var(--wt-border);
+    padding: 0.45rem 1rem;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.wt-btn-secondary:hover {
+    border-color: var(--wt-text-muted);
+    color: var(--wt-text);
+}
+
+/* ── Loading Spinner ────────────────────────────────────────────────────── */
+
+.wt-spinner {
+    display: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: wt-spin 0.6s linear infinite;
+}
+
+@keyframes wt-spin {
+    to { transform: rotate(360deg); }
+}
+
+.wt-btn-primary.loading .wt-spinner { display: inline-block; }
+.wt-btn-primary.loading .btn-text { display: none; }
+
+/* ── Toast Notifications ────────────────────────────────────────────────── */
+
+.wt-toast-container {
+    position: fixed;
+    top: 60px;
+    right: 1rem;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.wt-toast {
+    background: var(--wt-bg-card);
+    border: 1px solid var(--wt-border);
+    border-radius: 8px;
+    padding: 0.7rem 1rem;
+    font-size: 0.82rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    animation: wt-slideIn 0.3s ease;
+    max-width: 320px;
+}
+
+.wt-toast.success { border-left: 3px solid var(--wt-green); }
+.wt-toast.error   { border-left: 3px solid var(--wt-red); }
+.wt-toast.info    { border-left: 3px solid var(--wt-blue); }
+
+@keyframes wt-slideIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--wt-border);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--wt-border-light);
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 1200px) {
+    .wt-layout {
+        grid-template-columns: 260px 1fr 240px;
+    }
+}
+
+@media (max-width: 1024px) {
+    .wt-layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+        height: auto;
+    }
+    .wt-sidebar-left,
+    .wt-sidebar-right {
+        border: none;
+        border-bottom: 1px solid var(--wt-border);
+    }
+    .wt-chart-area {
+        min-height: 400px;
+    }
+    .wt-chart-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ── Empty State ────────────────────────────────────────────────────────── */
+
+.wt-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--wt-text-muted);
+    gap: 0.75rem;
+    padding: 2rem;
+}
+
+.wt-empty-state i {
+    font-size: 2.5rem;
+    opacity: 0.3;
+}
+
+.wt-empty-state p {
+    font-size: 0.85rem;
+    text-align: center;
+    max-width: 280px;
+}
+
+/* ── Trade markers legend ───────────────────────────────────────────────── */
+
+.wt-legend {
+    display: flex;
+    gap: 1rem;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.75rem;
+    color: var(--wt-text-muted);
+    background: var(--wt-bg-secondary);
+    border-bottom: 1px solid var(--wt-border);
+}
+
+.wt-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.wt-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.wt-legend-dot.buy { background: var(--wt-green); }
+.wt-legend-dot.sell { background: var(--wt-red); }
+.wt-legend-dot.tp { background: var(--wt-blue); }
+.wt-legend-dot.sl { background: var(--wt-orange); }

@@ -32,5 +32,26 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
 
+  dashboard:
+    build: .
+    image: wavetrader:latest
+    container_name: wavetrader-dashboard
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/data:ro
+      - ./checkpoints:/checkpoints:ro
+      - ./backtest_results:/backtest_results:ro
+      - ./processed_data:/processed_data:ro
+    env_file:
+      - .env
+    command: python -m dashboard.run --host 0.0.0.0 --port 5000
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
 volumes:
   redis-data:
