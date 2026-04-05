@@ -374,8 +374,14 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     elapsed = round(time.time() - start_time, 1)
     logger.info("Backtest completed in %ss — %d trades", elapsed, len(results.trades))
 
-    # Serialize trades
-    trades_list = [_trade_to_dict(t) for t in results.trades]
+    # Serialize trades with running balance
+    running_balance = float(cfg["initial_balance"])
+    trades_list = []
+    for t in results.trades:
+        td = _trade_to_dict(t)
+        running_balance += td["pnl"]
+        td["balance"] = round(running_balance, 2)
+        trades_list.append(td)
 
     # Build breakdowns
     breakdowns = _compute_breakdowns(trades_list)
@@ -447,6 +453,7 @@ def load_cached_results() -> Optional[Dict[str, Any]]:
                 "exit_price": round(float(row.get("exit_price", 0)), 5),
                 "pnl": round(float(row.get("pnl", 0)), 2),
                 "exit_reason": str(row.get("exit_reason", "")),
+                "balance": round(float(row.get("balance_after", 0)), 2) if "balance_after" in row.index else None,
             })
 
         # Equity curve
@@ -455,6 +462,14 @@ def load_cached_results() -> Optional[Dict[str, Any]]:
             eq_df = pd.read_csv(equity_csv)
             col = eq_df.columns[-1]  # last column is usually balance
             equity = [round(float(v), 2) for v in eq_df[col].dropna().tolist()]
+
+        # Backfill running balance if not present from CSV
+        initial = NOTEBOOK_DEFAULTS["initial_balance"]
+        running = initial
+        for t in trades_list:
+            running += t["pnl"]
+            if t["balance"] is None:
+                t["balance"] = round(running, 2)
 
         # Compute metrics from trades
         winning = [t for t in trades_list if t["pnl"] > 0]

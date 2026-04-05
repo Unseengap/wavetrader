@@ -168,6 +168,68 @@ body {
     transition: padding 0.3s ease, opacity 0.3s ease;
 }
 
+.wt-sidebar-right.split-active {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+}
+
+.wt-sidebar-right.split-active .wt-sidebar-section {
+    padding: 1rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 80px;
+}
+
+.wt-sidebar-drag-handle {
+    flex-shrink: 0;
+    height: 8px;
+    background: var(--wt-bg-card);
+    border-top: 1px solid var(--wt-border);
+    border-bottom: 1px solid var(--wt-border);
+    cursor: row-resize;
+    position: relative;
+}
+
+.wt-sidebar-drag-handle::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 30px;
+    height: 2px;
+    background: var(--wt-text-muted);
+    border-radius: 1px;
+    opacity: 0.4;
+}
+
+.wt-sidebar-drag-handle:hover {
+    background: var(--wt-bg-input);
+}
+
+.wt-sidebar-drag-handle:hover::after {
+    opacity: 0.8;
+}
+
+/* Auto-Trade Bar */
+.wt-auto-trade-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem;
+    background: var(--wt-bg-card);
+    border-bottom: 1px solid var(--wt-border);
+    border-radius: 6px 6px 0 0;
+    margin-bottom: 0.5rem;
+}
+
+.wt-auto-trade-toggle {
+    display: flex;
+    align-items: center;
+}
+
 .wt-layout.right-collapsed .wt-sidebar-right {
     padding: 0;
     opacity: 0;

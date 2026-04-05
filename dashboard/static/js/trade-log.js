@@ -16,7 +16,7 @@ function renderTradeLog(trades) {
         _allTrades = [];
         document.getElementById('trade-log-count').textContent = '0 trades';
         document.getElementById('trade-log-body').innerHTML =
-            '<tr><td colspan="12" style="text-align:center;color:var(--wt-text-muted);padding:2rem">No trades to display</td></tr>';
+            '<tr><td colspan=\"13\" style=\"text-align:center;color:var(--wt-text-muted);padding:2rem\">No trades to display</td></tr>';
         return;
     }
 
@@ -70,6 +70,7 @@ function _renderRows() {
             case 'take_profit': va = a.take_profit || 0; vb = b.take_profit || 0; break;
             case 'size': va = a.size || 0; vb = b.size || 0; break;
             case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+            case 'balance': va = a.balance || 0; vb = b.balance || 0; break;
             case 'exit_reason': va = a.exit_reason || ''; vb = b.exit_reason || ''; break;
             case 'duration': va = a._durationHours; vb = b._durationHours; break;
             default: va = a._index; vb = b._index;
@@ -116,6 +117,7 @@ function _renderRows() {
             <td>${t.take_profit ? t.take_profit.toFixed(3) : '—'}</td>
             <td>${t.size}</td>
             <td>${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</td>
+            <td>${t.balance != null ? '$' + t.balance.toLocaleString('en-US', {minimumFractionDigits: 2}) : '—'}</td>
             <td>${t.exit_reason || '—'}</td>
             <td>${t._duration || '—'}</td>
         `;

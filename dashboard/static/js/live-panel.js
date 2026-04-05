@@ -7,6 +7,7 @@
 let liveMode = false;
 let eventSource = null;
 let liveReconnectTimer = null;
+let lastCandleTime = 0;  // Guard against out-of-order candle updates
 
 // ── Toggle Handler ──────────────────────────────────────────────────────────
 
@@ -29,10 +30,14 @@ async function enableLiveMode() {
     // Update UI
     document.getElementById('live-label').textContent = 'Live';
     document.getElementById('live-label').style.color = 'var(--wt-green)';
-    document.getElementById('live-panel').style.display = 'block';
-    document.getElementById('backtest-panel').style.display = 'none';
     document.getElementById('connection-status').innerHTML =
         '<i class="bi bi-circle-fill" style="color:var(--wt-yellow);font-size:6px;vertical-align:middle"></i> Connecting…';
+
+    // Show split sidebar: performance (top) + live feed (bottom)
+    document.getElementById('live-panel').style.display = 'block';
+    document.getElementById('sidebar-drag-handle').style.display = 'block';
+    document.getElementById('backtest-panel').style.display = 'block';
+    activateSidebarSplit();
 
     // Switch to Live Trading hub tab
     if (typeof switchToTopTab === 'function') {
@@ -75,7 +80,9 @@ function disableLiveMode() {
     document.getElementById('live-label').textContent = 'Historical';
     document.getElementById('live-label').style.color = 'var(--wt-text-muted)';
     document.getElementById('live-panel').style.display = 'none';
+    document.getElementById('sidebar-drag-handle').style.display = 'none';
     document.getElementById('backtest-panel').style.display = 'block';
+    deactivateSidebarSplit();
     document.getElementById('connection-status').innerHTML =
         '<i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i> Dashboard Active';
 
@@ -131,6 +138,10 @@ async function loadLiveCandles(pair, tf) {
         chartManager.candleSeries.setData(candles);
         chartManager.volumeSeries.setData(volumes);
         chartManager.chart.timeScale().scrollToRealTime();
+        // Reset candle guard to the latest candle time
+        if (candles.length > 0) {
+            lastCandleTime = candles[candles.length - 1].time;
+        }
     } catch (err) {
         showToast('Failed to load live candles: ' + err.message, 'error');
     }
@@ -162,6 +173,9 @@ function connectSSE() {
             const c = JSON.parse(e.data);
             const t = typeof c.time === 'number' ? c.time : Math.floor(new Date(c.time).getTime() / 1000);
             if (!t || isNaN(t)) return;
+            // Skip candles older than the last one we rendered
+            if (t < lastCandleTime) return;
+            lastCandleTime = t;
             chartManager.candleSeries.update({
                 time: t,
                 open: c.open,
@@ -191,6 +205,11 @@ function connectSSE() {
 
             const spreadPips = (p.spread / 0.01).toFixed(1); // JPY pair
             setText('live-spread', spreadPips + ' pips');
+
+            // Mirror to sidebar
+            setText('live-bid-sidebar', p.bid.toFixed(3));
+            setText('live-ask-sidebar', p.ask.toFixed(3));
+            setText('live-spread-sidebar', spreadPips + ' pips');
         } catch (err) {
             console.error('price parse error:', err);
         }
@@ -218,8 +237,20 @@ function connectSSE() {
             badge.offsetHeight; // reflow
             badge.style.animation = 'signal-flash 0.6s ease';
 
+            // Mirror to sidebar
+            const sidebarBadge = document.getElementById('live-signal-badge-sidebar');
+            if (sidebarBadge) {
+                sidebarBadge.textContent = s.signal;
+                sidebarBadge.className = 'wt-signal-badge ' + s.signal.toLowerCase();
+            }
+            setText('live-confidence-sidebar', (s.confidence * 100).toFixed(1) + '%');
+            setText('live-alignment-sidebar', (s.alignment * 100).toFixed(1) + '%');
+
             showToast(`Signal: ${s.signal} (${(s.confidence * 100).toFixed(0)}% conf)`,
                 s.signal === 'BUY' ? 'success' : s.signal === 'SELL' ? 'error' : 'info');
+
+            // Log signal to Signals tab
+            appendSignalLog(s);
         } catch (err) {
             console.error('signal parse error:', err);
         }
@@ -247,6 +278,17 @@ function connectSSE() {
                 marketEl.textContent = a.market_open ? 'Open' : 'Closed';
                 marketEl.style.color = a.market_open ? 'var(--wt-green)' : 'var(--wt-text-muted)';
             }
+
+            // Mirror to sidebar
+            setText('live-balance-sidebar', '$' + a.balance.toLocaleString('en-US', { minimumFractionDigits: 2 }));
+            setText('live-nav-sidebar', '$' + a.nav.toLocaleString('en-US', { minimumFractionDigits: 2 }));
+            const sidebarPnl = document.getElementById('live-pnl-sidebar');
+            if (sidebarPnl) {
+                const pnl = a.unrealized_pnl;
+                sidebarPnl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+                sidebarPnl.style.color = pnl >= 0 ? 'var(--wt-green)' : 'var(--wt-red)';
+            }
+            setText('live-trades-sidebar', a.open_trades);
         } catch (err) {
             console.error('account parse error:', err);
         }
@@ -270,6 +312,31 @@ function connectSSE() {
             if (s.status === 'error') {
                 showToast('Stream error: ' + s.error, 'error');
             }
+        } catch (err) {}
+    });
+
+    // ── Trade executed (auto-trade) ───────────────────────────────────
+    eventSource.addEventListener('trade_executed', (e) => {
+        if (!liveMode) return;
+        try {
+            const t = JSON.parse(e.data);
+            appendTradeLog(t);
+            showToast(`Trade ${t.signal} ${t.pair} @ ${t.entry_price} (${t.paper ? 'Paper' : 'LIVE'})`,
+                t.signal === 'BUY' ? 'success' : 'error');
+            // Refresh account after trade
+            refreshAccount();
+        } catch (err) {
+            console.error('trade_executed parse error:', err);
+        }
+    });
+
+    // ── Trade closed ──────────────────────────────────────────────────
+    eventSource.addEventListener('trade_closed', (e) => {
+        if (!liveMode) return;
+        try {
+            const t = JSON.parse(e.data);
+            showToast(`Position closed: ${t.reason}`, 'info');
+            refreshAccount();
         } catch (err) {}
     });
 }
@@ -346,3 +413,191 @@ function setText(id, text) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
 }
+
+// ── Auto-Trade Toggle ───────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+    const toggle = document.getElementById('auto-trade-toggle');
+    if (toggle) {
+        toggle.addEventListener('change', async (e) => {
+            const enabled = e.target.checked;
+            const mode = document.getElementById('auto-trade-mode');
+            const paper = mode ? mode.value === 'paper' : true;
+            try {
+                const resp = await fetch('/api/live/auto-trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled, paper }),
+                });
+                const data = await resp.json();
+                const label = document.getElementById('auto-trade-label');
+                if (label) {
+                    label.textContent = data.enabled
+                        ? `Auto-Trade ON (${data.paper_trading ? 'Paper' : 'LIVE'})`
+                        : 'Auto-Trade Off';
+                    label.style.color = data.enabled ? 'var(--wt-green)' : 'var(--wt-text-muted)';
+                }
+                showToast(
+                    data.enabled ? 'Auto-trade enabled — signals will execute trades' : 'Auto-trade disabled',
+                    data.enabled ? 'success' : 'info'
+                );
+            } catch (err) {
+                showToast('Failed to toggle auto-trade: ' + err.message, 'error');
+                e.target.checked = !enabled;
+            }
+        });
+    }
+
+    // Mode selector change
+    const modeSelect = document.getElementById('auto-trade-mode');
+    if (modeSelect) {
+        modeSelect.addEventListener('change', async () => {
+            const toggle = document.getElementById('auto-trade-toggle');
+            if (toggle && toggle.checked) {
+                // Re-send with updated mode
+                toggle.dispatchEvent(new Event('change'));
+            }
+        });
+    }
+});
+
+// ── Signal & Trade Logging ──────────────────────────────────────────────────
+
+function appendSignalLog(signal) {
+    const log = document.getElementById('live-signals-log');
+    if (!log) return;
+
+    // Clear empty state
+    const empty = log.querySelector('.wt-empty-state');
+    if (empty) empty.remove();
+
+    const color = signal.signal === 'BUY' ? 'var(--wt-green)' : signal.signal === 'SELL' ? 'var(--wt-red)' : 'var(--wt-text-muted)';
+    const ts = signal.timestamp ? new Date(signal.timestamp).toLocaleTimeString() : '—';
+    const html = `
+        <div class="wt-signal-log-entry" style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border);font-size:0.78rem">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="color:${color};font-weight:600">${signal.signal}</span>
+                <span style="color:var(--wt-text-muted);font-size:0.68rem">${ts}</span>
+            </div>
+            <div style="color:var(--wt-text-muted);font-size:0.68rem">
+                Conf: ${(signal.confidence * 100).toFixed(1)}% | Align: ${(signal.alignment * 100).toFixed(1)}% | SL: ${signal.sl_pips.toFixed(1)} | TP: ${signal.tp_pips.toFixed(1)}
+            </div>
+        </div>
+    `;
+    log.insertAdjacentHTML('afterbegin', html);
+
+    // Keep only last 50 entries
+    const entries = log.querySelectorAll('.wt-signal-log-entry');
+    if (entries.length > 50) {
+        for (let i = 50; i < entries.length; i++) entries[i].remove();
+    }
+}
+
+function appendTradeLog(trade) {
+    const log = document.getElementById('live-signals-log');
+    if (!log) return;
+
+    const color = trade.signal === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
+    const ts = trade.timestamp ? new Date(trade.timestamp).toLocaleTimeString() : '—';
+    const html = `
+        <div class="wt-signal-log-entry" style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border);font-size:0.78rem;background:rgba(88,166,255,0.06)">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <span><i class="bi bi-arrow-left-right"></i> <strong style="color:${color}">TRADE ${trade.signal}</strong></span>
+                <span style="font-size:0.68rem;color:var(--wt-text-muted)">${ts}</span>
+            </div>
+            <div style="color:var(--wt-text-muted);font-size:0.68rem">
+                @ ${trade.entry_price} | SL: ${trade.sl} | TP: ${trade.tp} | ${trade.paper ? 'Paper' : 'LIVE'} | ${trade.status}
+            </div>
+        </div>
+    `;
+    log.insertAdjacentHTML('afterbegin', html);
+}
+
+// ── Sidebar Split (Performance + Live Feed) ─────────────────────────────────
+
+let sidebarDragging = false;
+
+function activateSidebarSplit() {
+    const sidebar = document.getElementById('sidebar-right');
+    const top = document.getElementById('backtest-panel');
+    const handle = document.getElementById('sidebar-drag-handle');
+    const bottom = document.getElementById('live-panel');
+    if (!sidebar || !top || !handle || !bottom) return;
+
+    sidebar.classList.add('split-active');
+
+    // Restore saved ratio or default to 50%
+    const saved = localStorage.getItem('wt-sidebar-ratio');
+    const ratio = saved ? parseFloat(saved) : 0.5;
+    applySidebarRatio(ratio);
+}
+
+function deactivateSidebarSplit() {
+    const sidebar = document.getElementById('sidebar-right');
+    if (sidebar) sidebar.classList.remove('split-active');
+    const top = document.getElementById('backtest-panel');
+    if (top) { top.style.flex = ''; top.style.overflow = ''; }
+    const bottom = document.getElementById('live-panel');
+    if (bottom) { bottom.style.flex = ''; bottom.style.overflow = ''; }
+}
+
+function applySidebarRatio(ratio) {
+    const top = document.getElementById('backtest-panel');
+    const bottom = document.getElementById('live-panel');
+    if (!top || !bottom) return;
+    ratio = Math.max(0.2, Math.min(0.8, ratio));
+    top.style.flex = `0 0 ${ratio * 100}%`;
+    top.style.overflow = 'auto';
+    bottom.style.flex = `0 0 ${(1 - ratio) * 100 - 2}%`; // 2% for handle
+    bottom.style.overflow = 'auto';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const handle = document.getElementById('sidebar-drag-handle');
+    if (!handle) return;
+
+    handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        sidebarDragging = true;
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+
+        const sidebar = document.getElementById('sidebar-right');
+        const startY = e.clientY;
+        const sidebarRect = sidebar.getBoundingClientRect();
+        const sidebarH = sidebarRect.height;
+        const top = document.getElementById('backtest-panel');
+        const startTopH = top.getBoundingClientRect().height;
+
+        function onMove(ev) {
+            if (!sidebarDragging) return;
+            const dy = ev.clientY - startY;
+            const newRatio = (startTopH + dy) / sidebarH;
+            applySidebarRatio(newRatio);
+        }
+
+        function onUp() {
+            sidebarDragging = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            // Save ratio
+            const top = document.getElementById('backtest-panel');
+            const sidebar = document.getElementById('sidebar-right');
+            if (top && sidebar) {
+                const ratio = top.getBoundingClientRect().height / sidebar.getBoundingClientRect().height;
+                localStorage.setItem('wt-sidebar-ratio', ratio.toFixed(3));
+            }
+        }
+
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    });
+
+    // Double-click to reset to 50/50
+    handle.addEventListener('dblclick', () => {
+        applySidebarRatio(0.5);
+        localStorage.setItem('wt-sidebar-ratio', '0.5');
+    });
+});

@@ -317,6 +317,7 @@
                                             <th data-sort="take_profit">TP</th>
                                             <th data-sort="size">Size</th>
                                             <th data-sort="pnl">P&L</th>
+                                            <th data-sort="balance">Balance</th>
                                             <th data-sort="exit_reason">Reason</th>
                                             <th data-sort="duration">Duration</th>
                                         </tr>
@@ -450,6 +451,23 @@
 
                     <!-- Signals Tab -->
                     <div id="tab-live-signals" class="wt-live-tab-pane">
+                        <div class="wt-auto-trade-bar">
+                            <div class="wt-auto-trade-toggle">
+                                <label class="wt-switch" title="Auto-execute trades from model signals">
+                                    <input type="checkbox" id="auto-trade-toggle">
+                                    <span class="wt-switch-slider"></span>
+                                </label>
+                                <span id="auto-trade-label" style="font-size:0.78rem;color:var(--wt-text-muted);margin-left:6px">
+                                    Auto-Trade Off
+                                </span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <select id="auto-trade-mode" style="font-size:0.75rem;padding:2px 6px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px">
+                                    <option value="paper" selected>Paper Trading</option>
+                                    <option value="live">Live Trading</option>
+                                </select>
+                            </div>
+                        </div>
                         <div id="live-signals-log" class="wt-signals-log">
                             <div class="wt-empty-state" style="padding:1rem">
                                 <p>Enable live mode to see model signals</p>
@@ -464,16 +482,8 @@
     <!-- ─── Right Sidebar: Metrics ─────────────────────────────────────── -->
     <div class="wt-sidebar-right" id="sidebar-right">
 
-        <!-- ── Live Status (compact, shown when live) ── -->
-        <div id="live-panel" style="display:none">
-            <div class="wt-card-header">
-                <i class="bi bi-broadcast"></i> Live Feed
-                <span id="live-status-dot" class="wt-status-dot offline"></span>
-            </div>
-        </div>
-
-        <!-- ── Backtest Performance Panel (default visible) ── -->
-        <div id="backtest-panel">
+        <!-- ── Backtest Performance Panel (always visible, top in split) ── -->
+        <div id="backtest-panel" class="wt-sidebar-section">
             <div class="wt-card-header">
                 <i class="bi bi-speedometer2"></i> Performance
             </div>
@@ -547,6 +557,65 @@
             </div>
         </div>
     </div><!-- /backtest-panel -->
+
+    <!-- ── Sidebar Drag Handle (visible in live mode) ── -->
+    <div id="sidebar-drag-handle" class="wt-sidebar-drag-handle" style="display:none"></div>
+
+    <!-- ── Live Feed Panel (bottom, shown in live mode) ── -->
+    <div id="live-panel" class="wt-sidebar-section" style="display:none">
+        <div class="wt-card-header">
+            <i class="bi bi-broadcast"></i> Live Feed
+            <span id="live-status-dot" class="wt-status-dot offline"></span>
+        </div>
+        <div class="wt-card">
+            <div class="wt-card-header"><i class="bi bi-lightning-charge"></i> Signal</div>
+            <div style="text-align:center;padding:0.35rem 0">
+                <div id="live-signal-badge-sidebar" class="wt-signal-badge hold" style="font-size:0.85rem">HOLD</div>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Confidence</span>
+                <span class="wt-metric-value" id="live-confidence-sidebar">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Alignment</span>
+                <span class="wt-metric-value" id="live-alignment-sidebar">—</span>
+            </div>
+        </div>
+        <div class="wt-card">
+            <div class="wt-card-header"><i class="bi bi-bank"></i> Account</div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Balance</span>
+                <span class="wt-metric-value" id="live-balance-sidebar">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">NAV</span>
+                <span class="wt-metric-value" id="live-nav-sidebar">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Unrealised P&L</span>
+                <span class="wt-metric-value" id="live-pnl-sidebar">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Open Trades</span>
+                <span class="wt-metric-value" id="live-trades-sidebar">—</span>
+            </div>
+        </div>
+        <div class="wt-card">
+            <div class="wt-card-header"><i class="bi bi-currency-exchange"></i> Price</div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Bid</span>
+                <span class="wt-metric-value" id="live-bid-sidebar" style="font-family:monospace">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Ask</span>
+                <span class="wt-metric-value" id="live-ask-sidebar" style="font-family:monospace">—</span>
+            </div>
+            <div class="wt-metric">
+                <span class="wt-metric-label">Spread</span>
+                <span class="wt-metric-value" id="live-spread-sidebar">—</span>
+            </div>
+        </div>
+    </div><!-- /live-panel -->
     </div>
 </div>
 

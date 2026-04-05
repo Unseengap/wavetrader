@@ -134,8 +134,21 @@ class LiveService:
         self._model_config = None
         self._device = None
         self._last_complete_time: Optional[datetime] = None
+        self._last_broadcast_time: int = 0  # UNIX ts of last candle sent via SSE
         self._status: str = "stopped"  # stopped | starting | running | error
         self._error_msg: str = ""
+
+        # ── Auto-trade state ──────────────────────────────────────────────
+        self._auto_trade: bool = False
+        self._paper_trading: bool = True
+        self._open_trade_id: Optional[str] = None
+        self._open_trade_direction: Optional[str] = None  # "BUY" or "SELL"
+        self._open_trade_entry: float = 0.0
+        self._open_trade_sl: float = 0.0
+        self._open_trade_tp: float = 0.0
+        self._min_confidence: float = 0.55
+        self._risk_per_trade: float = 0.01
+        self._trade_log: List[dict] = []  # record of executed trades
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -288,6 +301,154 @@ class LiveService:
             pass
         finally:
             self.broadcaster.unsubscribe(q)
+
+    # ── Auto-Trade ────────────────────────────────────────────────────────
+
+    @property
+    def auto_trade_status(self) -> dict:
+        return {
+            "enabled": self._auto_trade,
+            "paper_trading": self._paper_trading,
+            "open_trade": self._open_trade_id,
+            "open_direction": self._open_trade_direction,
+            "min_confidence": self._min_confidence,
+            "risk_per_trade": self._risk_per_trade,
+            "recent_trades": self._trade_log[-10:],
+        }
+
+    def set_auto_trade(self, enabled: bool, paper: bool = True) -> dict:
+        """Enable or disable automatic trade execution."""
+        self._auto_trade = enabled
+        self._paper_trading = paper
+        logger.info("Auto-trade %s (paper=%s)", "ENABLED" if enabled else "DISABLED", paper)
+        return self.auto_trade_status
+
+    def _execute_signal(self, signal_dict: dict, current_price: float) -> None:
+        """Execute a trade based on model signal — mirrors StreamingEngine logic."""
+        if not self._auto_trade:
+            return
+
+        sig = signal_dict["signal"]  # "BUY", "SELL", "HOLD"
+        conf = signal_dict["confidence"]
+
+        # Skip low-confidence or HOLD
+        if conf < self._min_confidence or sig == "HOLD":
+            return
+
+        # Close opposite position first
+        if self._open_trade_id and self._open_trade_direction != sig:
+            self._close_live_position("Signal reversal")
+
+        # Open new if flat
+        if self._open_trade_id is None:
+            self._open_live_position(signal_dict, current_price)
+
+    def _open_live_position(self, signal_dict: dict, current_price: float) -> None:
+        """Open a position via OANDA (or paper)."""
+        _PIP_SIZE = {"GBP/JPY": 0.01, "EUR/JPY": 0.01, "USD/JPY": 0.01, "GBP/USD": 0.0001}
+        _PIP_VALUE = {"GBP/JPY": 6.5, "EUR/JPY": 6.7, "USD/JPY": 6.5, "GBP/USD": 10.0}
+
+        sig = signal_dict["signal"]
+        pip = _PIP_SIZE.get(self._pair, 0.01)
+        pip_value = _PIP_VALUE.get(self._pair, 6.5)
+
+        # Get balance from OANDA
+        try:
+            acct = self.get_account()
+            balance = acct.get("balance", 25000)
+        except Exception:
+            balance = 25000
+
+        # Position sizing
+        sl_pips = signal_dict["sl_pips"]
+        tp_pips = signal_dict["tp_pips"]
+        risk_amount = balance * self._risk_per_trade
+        lot = risk_amount / max(sl_pips * pip_value, 1e-9)
+        lot = max(0.01, min(5.0, lot))
+        units = int(lot * 100000)
+        if sig == "SELL":
+            units = -units
+
+        # Absolute SL/TP
+        if sig == "BUY":
+            sl_price = current_price - sl_pips * pip
+            tp_price = current_price + tp_pips * pip
+        else:
+            sl_price = current_price + sl_pips * pip
+            tp_price = current_price - tp_pips * pip
+
+        trade_record = {
+            "signal": sig,
+            "pair": self._pair,
+            "entry_price": round(current_price, 5),
+            "units": units,
+            "sl": round(sl_price, 5),
+            "tp": round(tp_price, 5),
+            "confidence": signal_dict["confidence"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "paper": self._paper_trading,
+        }
+
+        if self._paper_trading:
+            self._open_trade_id = f"paper_{int(time.time())}"
+            self._open_trade_direction = sig
+            self._open_trade_entry = current_price
+            self._open_trade_sl = sl_price
+            self._open_trade_tp = tp_price
+            trade_record["trade_id"] = self._open_trade_id
+            trade_record["status"] = "filled_paper"
+            logger.info("Paper trade opened: %s %s @ %.3f", sig, self._pair, current_price)
+        else:
+            try:
+                order = self._oanda.place_market_order(
+                    self._pair, units, sl=sl_price, tp=tp_price,
+                )
+                if order.status == "FILLED":
+                    self._open_trade_id = order.trade_id
+                    self._open_trade_direction = sig
+                    self._open_trade_entry = order.price
+                    self._open_trade_sl = sl_price
+                    self._open_trade_tp = tp_price
+                    trade_record["trade_id"] = order.trade_id
+                    trade_record["status"] = "filled"
+                    logger.info("OANDA order filled: %s @ %.3f", order.trade_id, order.price)
+                else:
+                    trade_record["status"] = f"rejected: {order.status}"
+                    logger.error("Order rejected: %s", order.status)
+            except Exception as e:
+                trade_record["status"] = f"error: {e}"
+                logger.error("Failed to place order: %s", e)
+
+        self._trade_log.append(trade_record)
+        # Broadcast the trade event to frontend
+        self.broadcaster.publish("trade_executed", trade_record)
+
+    def _close_live_position(self, reason: str) -> None:
+        """Close the current open position."""
+        if not self._open_trade_id:
+            return
+
+        close_record = {
+            "trade_id": self._open_trade_id,
+            "direction": self._open_trade_direction,
+            "pair": self._pair,
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        if self._paper_trading:
+            logger.info("Paper trade closed: %s (%s)", self._open_trade_id, reason)
+        else:
+            try:
+                self._oanda.close_trade(self._open_trade_id)
+                logger.info("OANDA trade closed: %s (%s)", self._open_trade_id, reason)
+            except Exception as e:
+                logger.error("Failed to close trade %s: %s", self._open_trade_id, e)
+
+        self._open_trade_id = None
+        self._open_trade_direction = None
+        self._open_trade_entry = 0.0
+        self.broadcaster.publish("trade_closed", close_record)
 
     # ── Model loading ─────────────────────────────────────────────────────
 
@@ -470,8 +631,13 @@ class LiveService:
                 candles = self._oanda.get_candles(self._pair, gran, count=3)
 
                 for c in candles:
+                    candle_time = int(c.timestamp.timestamp())
+                    # Only broadcast candles >= last broadcast time to avoid
+                    # "Cannot update oldest data" in lightweight-charts
+                    if candle_time < self._last_broadcast_time:
+                        continue
                     tick = {
-                        "time": int(c.timestamp.timestamp()),
+                        "time": candle_time,
                         "open": c.open,
                         "high": c.high,
                         "low": c.low,
@@ -480,6 +646,7 @@ class LiveService:
                         "complete": c.complete,
                     }
                     self.broadcaster.publish("candle", tick)
+                    self._last_broadcast_time = candle_time
 
                     # Track completed bars
                     if c.complete:
@@ -522,6 +689,8 @@ class LiveService:
                             signal = self._run_inference(tf_history)
                             if signal:
                                 self.broadcaster.publish("signal", signal)
+                                # Auto-execute trade if enabled
+                                self._execute_signal(signal, c.close)
 
                 # Also push current price
                 try:

@@ -83,3 +83,24 @@ def get_trades():
     """Fetch open trades from OANDA."""
     svc = get_live_service()
     return jsonify({"trades": svc.get_open_trades()})
+
+
+# ── Auto-Trade Toggle ─────────────────────────────────────────────────────────
+
+@live_bp.route("/auto-trade", methods=["GET"])
+def get_auto_trade():
+    """Return current auto-trade status."""
+    svc = get_live_service()
+    return jsonify(svc.auto_trade_status)
+
+
+@live_bp.route("/auto-trade", methods=["POST"])
+def set_auto_trade():
+    """Enable or disable automatic trade execution."""
+    data = request.get_json(force=True, silent=True) or {}
+    enabled = bool(data.get("enabled", False))
+    paper = bool(data.get("paper", True))
+
+    svc = get_live_service()
+    result = svc.set_auto_trade(enabled, paper)
+    return jsonify(result)
