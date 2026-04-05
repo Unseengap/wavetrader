@@ -24,7 +24,20 @@ import pandas as pd
 # Imported at function call time so the module can be loaded even if torch
 # isn't installed (e.g. for frontend-only development).
 
-_RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "backtest_results"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_dir(name: str) -> Path:
+    """Return the correct path for a data directory, works in Docker and locally."""
+    # Docker mounts are at root level: /backtest_results, /data, etc.
+    docker_path = Path("/") / name
+    local_path = _PROJECT_ROOT / name
+    if docker_path.exists() and docker_path.is_dir():
+        return docker_path
+    return local_path
+
+
+_RESULTS_DIR = _resolve_dir("backtest_results")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -182,8 +195,8 @@ def load_candles(
     """
     from wavetrader.data import load_forex_data
 
-    data_dir = Path(__file__).resolve().parent.parent.parent / "data"
-    processed_dir = Path(__file__).resolve().parent.parent.parent / "processed_data"
+    data_dir = _resolve_dir("data")
+    processed_dir = _resolve_dir("processed_data")
 
     # Try processed_data first (parquet), then raw data/
     df = None
@@ -297,8 +310,8 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     mtf_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
 
     # Load data
-    data_dir = Path(__file__).resolve().parent.parent.parent / "data"
-    processed_dir = Path(__file__).resolve().parent.parent.parent / "processed_data" / "test"
+    data_dir = _resolve_dir("data")
+    processed_dir = _resolve_dir("processed_data") / "test"
 
     # Try processed test data first
     df_dict = {}
@@ -316,7 +329,7 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": f"No data found for {pair}"}
 
     # Load model from checkpoint
-    checkpoint_dir = Path(__file__).resolve().parent.parent.parent / "checkpoints"
+    checkpoint_dir = _resolve_dir("checkpoints")
     model = _load_latest_model(checkpoint_dir, mtf_config)
 
     if model is None:

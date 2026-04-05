@@ -150,15 +150,17 @@ function connectSSE() {
         if (!chartManager || !liveMode) return;
         try {
             const c = JSON.parse(e.data);
+            const t = typeof c.time === 'number' ? c.time : Math.floor(new Date(c.time).getTime() / 1000);
+            if (!t || isNaN(t)) return;
             chartManager.candleSeries.update({
-                time: c.time,
+                time: t,
                 open: c.open,
                 high: c.high,
                 low: c.low,
                 close: c.close,
             });
             chartManager.volumeSeries.update({
-                time: c.time,
+                time: t,
                 value: c.volume,
                 color: c.close >= c.open
                     ? 'rgba(63, 185, 80, 0.3)'
