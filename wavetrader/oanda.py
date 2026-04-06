@@ -70,11 +70,46 @@ class OANDAConfig:
 
     @classmethod
     def from_env(cls) -> "OANDAConfig":
-        """Load configuration from environment variables."""
+        """Load configuration from environment variables (legacy single-account)."""
         return cls(
             api_key=os.environ.get("OANDA_API_KEY", ""),
             account_id=os.environ.get("OANDA_ACCOUNT_ID", ""),
             environment=os.environ.get("OANDA_ENVIRONMENT", "practice"),
+        )
+
+    @classmethod
+    def demo_from_env(cls) -> "OANDAConfig":
+        """Load demo (practice) account config from environment variables.
+
+        Falls back to legacy OANDA_API_KEY / OANDA_ACCOUNT_ID if the
+        demo-specific variables are not set.
+        """
+        return cls(
+            api_key=(
+                os.environ.get("OANDA_DEMO_API_KEY")
+                or os.environ.get("OANDA_API_KEY", "")
+            ),
+            account_id=(
+                os.environ.get("OANDA_DEMO_ACCOUNT_ID")
+                or os.environ.get("OANDA_ACCOUNT_ID", "")
+            ),
+            environment="practice",
+        )
+
+    @classmethod
+    def live_from_env(cls) -> Optional["OANDAConfig"]:
+        """Load live account config from environment variables.
+
+        Returns None if live credentials are not configured.
+        """
+        api_key = os.environ.get("OANDA_LIVE_API_KEY", "")
+        account_id = os.environ.get("OANDA_LIVE_ACCOUNT_ID", "")
+        if not api_key or not account_id:
+            return None
+        return cls(
+            api_key=api_key,
+            account_id=account_id,
+            environment="live",
         )
 
 
@@ -450,6 +485,54 @@ class OANDAClient:
             if self.close_trade(t.trade_id):
                 closed += 1
         return closed
+
+    def get_trade_history(
+        self,
+        pair: Optional[str] = None,
+        state: str = "ALL",
+        count: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Fetch trade history (open + closed) from OANDA.
+
+        Args:
+            pair: Filter by instrument (e.g. "GBP/JPY"). None = all pairs.
+            state: "ALL", "OPEN", or "CLOSED".
+            count: Number of trades to return (max 500).
+
+        Returns:
+            List of trade dicts with keys: trade_id, instrument, units, price,
+            realized_pl, unrealized_pl, open_time, close_time, state, sl, tp.
+        """
+        params: Dict[str, Any] = {
+            "state": state,
+            "count": str(min(count, 500)),
+        }
+        if pair:
+            params["instrument"] = self._to_instrument(pair)
+
+        data = self._api(
+            "GET",
+            f"/v3/accounts/{self.config.account_id}/trades",
+            params=params,
+        )
+
+        results = []
+        for t in data.get("trades", []):
+            results.append({
+                "trade_id": t["id"],
+                "instrument": t["instrument"],
+                "units": float(t.get("initialUnits", t.get("currentUnits", 0))),
+                "price": float(t["price"]),
+                "realized_pl": float(t.get("realizedPL", 0)),
+                "unrealized_pl": float(t.get("unrealizedPL", 0)),
+                "open_time": t.get("openTime", ""),
+                "close_time": t.get("closeTime", ""),
+                "state": t.get("state", "OPEN"),
+                "sl": float(t["stopLossOrder"]["price"]) if "stopLossOrder" in t else None,
+                "tp": float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
+                "direction": "BUY" if float(t.get("initialUnits", t.get("currentUnits", 0))) > 0 else "SELL",
+            })
+        return results
 
     # ── Utility ───────────────────────────────────────────────────────────
 

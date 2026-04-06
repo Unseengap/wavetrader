@@ -45,9 +45,10 @@ services:
     env_file:
       - .env
     environment:
-      - OANDA_API_KEY=${OANDA_API_KEY}
-      - OANDA_ACCOUNT_ID=${OANDA_ACCOUNT_ID}
-      - OANDA_ENVIRONMENT=${OANDA_ENVIRONMENT:-practice}
+      - OANDA_DEMO_API_KEY=${OANDA_DEMO_API_KEY}
+      - OANDA_DEMO_ACCOUNT_ID=${OANDA_DEMO_ACCOUNT_ID}
+      - OANDA_LIVE_API_KEY=${OANDA_LIVE_API_KEY:-}
+      - OANDA_LIVE_ACCOUNT_ID=${OANDA_LIVE_ACCOUNT_ID:-}
     command: python -m dashboard.run --host 0.0.0.0 --port 5000
     depends_on:
       - redis

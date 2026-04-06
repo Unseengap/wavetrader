@@ -78,14 +78,6 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint", default=None,
         help="Path to a saved .pt checkpoint to load before backtest",
     )
-    p.add_argument(
-        "--paper", action="store_true", default=True,
-        help="Paper trading mode (no real orders) — default for safety",
-    )
-    p.add_argument(
-        "--live-trading", action="store_true", default=False,
-        help="Enable real order execution (requires OANDA live account)",
-    )
     return p.parse_args()
 
 
@@ -317,21 +309,11 @@ def run_live(args: argparse.Namespace, device: torch.device) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    paper = not args.live_trading
     print("\n" + "=" * 70)
     print("WAVETRADER  LIVE TRADING")
     print("=" * 70)
     print(f"  Pair:    {args.pair}")
-    print(f"  Mode:    {'PAPER' if paper else '*** LIVE ***'}")
-    print(f"  Balance: ${args.balance:,.2f}")
     print(f"  Device:  {device}")
-
-    if not paper:
-        print("\n  ⚠️  LIVE TRADING — real money at risk!")
-        confirm = input("  Type 'CONFIRM' to proceed: ")
-        if confirm != "CONFIRM":
-            print("  Aborted.")
-            return
 
     # Load model
     config = wt.MTFConfig(pair=args.pair)
@@ -361,12 +343,29 @@ def run_live(args: argparse.Namespace, device: torch.device) -> None:
                     print(f"  Auto-loaded: {weights}")
                     break
 
-    # OANDA
-    oanda = OANDAClient()
-    account = oanda.get_account_summary()
-    print(f"\n  OANDA Account: {oanda.config.account_id}")
+    # OANDA — dual clients (demo always, live if configured)
+    demo_cfg = OANDAConfig.demo_from_env()
+    oanda_demo = OANDAClient(demo_cfg)
+    account = oanda_demo.get_account_summary()
+    print(f"\n  Demo Account: {demo_cfg.account_id}")
     print(f"  Balance: {account.currency} {account.balance:,.2f}")
     print(f"  NAV:     {account.currency} {account.nav:,.2f}")
+
+    oanda_live = None
+    live_cfg = OANDAConfig.live_from_env()
+    if live_cfg is not None:
+        try:
+            oanda_live = OANDAClient(live_cfg)
+            live_acct = oanda_live.get_account_summary()
+            print(f"\n  Live Account: {live_cfg.account_id}")
+            print(f"  Balance: {live_acct.currency} {live_acct.balance:,.2f}")
+            print(f"  NAV:     {live_acct.currency} {live_acct.nav:,.2f}")
+        except Exception as e:
+            print(f"\n  ⚠️  Live account init failed: {e}")
+            print("  Continuing with demo only.")
+            oanda_live = None
+    else:
+        print("\n  No live credentials — trading demo only")
 
     # Monitor
     monitor_config = MonitorConfig.from_env()
@@ -378,14 +377,14 @@ def run_live(args: argparse.Namespace, device: torch.device) -> None:
     # Engine
     engine = StreamingEngine(
         model=model,
-        oanda=oanda,
+        oanda_demo=oanda_demo,
         pair=args.pair,
         config=config,
         bt_config=bt_config,
         checkpoint_dir=os.environ.get("CHECKPOINT_DIR", "data/live_checkpoints"),
         checkpoint_interval=int(os.environ.get("CHECKPOINT_INTERVAL", "100")),
         monitor=monitor,
-        paper_trading=paper,
+        oanda_live=oanda_live,
     )
 
     # Set up copy trading if users are registered
@@ -396,6 +395,8 @@ def run_live(args: argparse.Namespace, device: torch.device) -> None:
     if active_users:
         engine.copy_trade_mgr = CopyTradeManager(registry, pair=args.pair, monitor=monitor)
         print(f"\n  Copy trading: {len(active_users)} followers connected")
+        mode = "DEMO + LIVE" if oanda_live else "DEMO"
+        print(f"  Trading mode: {mode}")
     else:
         print("\n  Copy trading: no followers (use --mode add-user to register)")
 

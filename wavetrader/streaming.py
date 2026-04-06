@@ -94,7 +94,7 @@ class StreamingEngine:
     def __init__(
         self,
         model: WaveTraderMTF,
-        oanda: OANDAClient,
+        oanda_demo: OANDAClient,
         pair: str = "GBP/JPY",
         config: Optional[MTFConfig] = None,
         bt_config: Optional[BacktestConfig] = None,
@@ -102,17 +102,17 @@ class StreamingEngine:
         checkpoint_dir: str = "/data/checkpoints",
         checkpoint_interval: int = 100,
         monitor: Optional[Monitor] = None,
-        paper_trading: bool = True,
+        oanda_live: Optional[OANDAClient] = None,
         copy_trade_mgr: Optional[CopyTradeManager] = None,
     ) -> None:
         self.model = model
-        self.oanda = oanda
+        self.oanda_demo = oanda_demo
+        self.oanda_live = oanda_live  # None if live creds not configured
         self.pair = pair
         self.copy_trade_mgr = copy_trade_mgr
         self.config = config or MTFConfig(pair=pair)
         self.bt_config = bt_config or BacktestConfig()
         self.res_config = res_config or ResonanceConfig()
-        self.paper_trading = paper_trading
         self.checkpoint_interval = checkpoint_interval
 
         # State
@@ -126,7 +126,7 @@ class StreamingEngine:
         self.losing_trades = 0
         self.total_pnl = 0.0
 
-        # Current position tracking
+        # Current position tracking (demo account)
         self.open_trade_id: Optional[str] = None
         self.open_trade_direction: Optional[Signal] = None
         self.open_trade_entry: Optional[float] = None
@@ -134,6 +134,13 @@ class StreamingEngine:
         self.open_trade_tp: Optional[float] = None
         self.open_trade_trailing_pct: float = 0.0
         self.open_trade_peak: float = 0.0  # For trailing stop
+
+        # Current position tracking (live account)
+        self.live_trade_id: Optional[str] = None
+        self.live_trade_direction: Optional[Signal] = None
+        self.live_trade_entry: Optional[float] = None
+        self.live_trade_sl: Optional[float] = None
+        self.live_trade_tp: Optional[float] = None
 
         # Circuit breaker state
         self._recent_ranges: deque = deque(maxlen=20)
@@ -185,19 +192,18 @@ class StreamingEngine:
         for tf in self.config.timeframes:
             n_bars = _HISTORY_BARS[tf]
             granularity = tf_to_granularity(tf)
-            candles = self.oanda.get_latest_candles(self.pair, granularity, n_bars)
+            candles = self.oanda_demo.get_latest_candles(self.pair, granularity, n_bars)
             if candles:
                 self._history[tf] = _candles_to_df(candles)
                 logger.info("  %s: fetched %d bars", tf, len(candles))
             else:
                 logger.warning("  %s: no candles returned", tf)
 
-        # Sync balance from OANDA
+        # Sync balance from OANDA demo account
         try:
-            account = self.oanda.get_account_summary()
-            if not self.paper_trading:
-                self.balance = account.balance
-                self.equity = account.nav
+            account = self.oanda_demo.get_account_summary()
+            self.balance = account.balance
+            self.equity = account.nav
             logger.info(
                 "OANDA account: balance=%.2f nav=%.2f open_trades=%d",
                 account.balance, account.nav, account.open_trade_count,
@@ -205,9 +211,9 @@ class StreamingEngine:
         except Exception as e:
             logger.warning("Could not sync OANDA account: %s", e)
 
-        # Check for existing open positions
+        # Check for existing open positions on demo account
         try:
-            open_trades = self.oanda.get_open_trades(self.pair)
+            open_trades = self.oanda_demo.get_open_trades(self.pair)
             if open_trades:
                 t = open_trades[0]
                 self.open_trade_id = t.trade_id
@@ -215,9 +221,24 @@ class StreamingEngine:
                 self.open_trade_entry = t.price
                 self.open_trade_sl = t.stop_loss
                 self.open_trade_tp = t.take_profit
-                logger.info("Existing position found: %s %s @ %.3f", t.trade_id, self.open_trade_direction.name, t.price)
+                logger.info("Existing demo position: %s %s @ %.3f", t.trade_id, self.open_trade_direction.name, t.price)
         except Exception as e:
-            logger.warning("Could not check open trades: %s", e)
+            logger.warning("Could not check demo open trades: %s", e)
+
+        # Check for existing open positions on live account
+        if self.oanda_live:
+            try:
+                live_trades = self.oanda_live.get_open_trades(self.pair)
+                if live_trades:
+                    t = live_trades[0]
+                    self.live_trade_id = t.trade_id
+                    self.live_trade_direction = Signal.BUY if t.units > 0 else Signal.SELL
+                    self.live_trade_entry = t.price
+                    self.live_trade_sl = t.stop_loss
+                    self.live_trade_tp = t.take_profit
+                    logger.info("Existing live position: %s %s @ %.3f", t.trade_id, self.live_trade_direction.name, t.price)
+            except Exception as e:
+                logger.warning("Could not check live open trades: %s", e)
 
         if self._history.get(self.config.entry_timeframe) is not None:
             self._last_bar_time = self._history[self.config.entry_timeframe]["date"].iloc[-1]
@@ -271,18 +292,19 @@ class StreamingEngine:
         logger.info("=" * 60)
         logger.info("WaveTrader StreamingEngine STARTED")
         logger.info("  Pair:  %s", self.pair)
-        logger.info("  Mode:  %s", "PAPER" if self.paper_trading else "LIVE")
+        logger.info("  Mode:  DEMO%s", " + LIVE" if self.oanda_live else " only")
         logger.info("  Device: %s", self.device)
         logger.info("=" * 60)
 
         if self.monitor:
+            mode = "DEMO + LIVE" if self.oanda_live else "DEMO"
             self.monitor.send_info(
-                f"WaveTrader started — {self.pair} ({'PAPER' if self.paper_trading else 'LIVE'})"
+                f"WaveTrader started — {self.pair} ({mode})"
             )
 
         while self._running:
             try:
-                if not self.oanda.is_market_open():
+                if not self.oanda_demo.is_market_open():
                     logger.debug("Market closed — sleeping 5min")
                     time.sleep(300)
                     continue
@@ -308,7 +330,7 @@ class StreamingEngine:
         """Check if a new complete candle is available for the entry timeframe."""
         entry_tf = self.config.entry_timeframe
         granularity = tf_to_granularity(entry_tf)
-        candles = self.oanda.get_candles(self.pair, granularity, count=2)
+        candles = self.oanda_demo.get_candles(self.pair, granularity, count=2)
         complete = [c for c in candles if c.complete]
         if not complete:
             return None
@@ -401,7 +423,7 @@ class StreamingEngine:
                 try:
                     granularity = tf_to_granularity(tf)
                     n_bars = _HISTORY_BARS[tf]
-                    candles = self.oanda.get_latest_candles(self.pair, granularity, n_bars)
+                    candles = self.oanda_demo.get_latest_candles(self.pair, granularity, n_bars)
                     if candles:
                         self._history[tf] = _candles_to_df(candles)
                 except Exception as e:
@@ -515,7 +537,7 @@ class StreamingEngine:
     # ── Execution ─────────────────────────────────────────────────────────
 
     def _execute_signal(self, signal: TradeSignal, candle: Candle) -> None:
-        """Execute a trade signal: open, hold, or close positions."""
+        """Execute a trade signal: open, hold, or close positions on both accounts."""
         # Skip low-confidence signals
         if signal.confidence < self.bt_config.min_confidence:
             return
@@ -523,30 +545,19 @@ class StreamingEngine:
         if signal.signal == Signal.HOLD:
             return
 
-        # If we have an open position in the opposite direction, close it first
-        if self.open_trade_id and self.open_trade_direction != signal.signal:
+        # If we have an open position in the opposite direction, close both accounts
+        if (self.open_trade_id and self.open_trade_direction != signal.signal) or \
+           (self.live_trade_id and self.live_trade_direction != signal.signal):
             self._close_position("Signal reversal")
 
-        # If flat, open new position
+        # If flat on both, open new positions
         if self.open_trade_id is None and signal.signal != Signal.HOLD:
             self._open_position(signal, candle)
 
     def _open_position(self, signal: TradeSignal, candle: Candle) -> None:
-        """Open a new position via OANDA."""
+        """Open a new position via OANDA on both demo and live accounts."""
         pip = _PIP_SIZE.get(self.pair, 0.01)
         pip_value = _PIP_VALUE.get(self.pair, 6.5)
-
-        # Position sizing: fixed-fractional risk
-        risk_mult = self._risk_multiplier()
-        effective_risk = self.bt_config.risk_per_trade * risk_mult
-        risk_amount = self.balance * effective_risk
-        lot = risk_amount / max(signal.stop_loss * pip_value, 1e-9)
-        lot = max(0.01, min(5.0, lot))
-
-        # Convert lots to units
-        units = int(lot * _LOT_SIZE)
-        if signal.signal == Signal.SELL:
-            units = -units
 
         # Calculate absolute SL/TP prices
         if signal.signal == Signal.BUY:
@@ -556,45 +567,18 @@ class StreamingEngine:
             sl_price = candle.close + signal.stop_loss * pip
             tp_price = candle.close - signal.take_profit * pip
 
-        logger.info(
-            "Opening %s %s: units=%d SL=%.3f TP=%.3f conf=%.3f",
-            signal.signal.name, self.pair, units, sl_price, tp_price, signal.confidence,
+        # Place on demo account
+        self._place_order_on_account(
+            "demo", self.oanda_demo, signal, candle, sl_price, tp_price, pip_value,
         )
 
-        if self.paper_trading:
-            # Paper trade: simulate fill
-            self.open_trade_id = f"paper_{self.bar_count}"
-            self.open_trade_direction = signal.signal
-            self.open_trade_entry = candle.close
-            self.open_trade_sl = sl_price
-            self.open_trade_tp = tp_price
-            self.open_trade_trailing_pct = signal.trailing_stop_pct
-            self.open_trade_peak = candle.close
-            self.total_trades += 1
-        else:
-            # Live trade via OANDA
-            try:
-                order = self.oanda.place_market_order(
-                    self.pair, units, sl=sl_price, tp=tp_price,
-                )
-                if order.status == "FILLED":
-                    self.open_trade_id = order.trade_id
-                    self.open_trade_direction = signal.signal
-                    self.open_trade_entry = order.price
-                    self.open_trade_sl = sl_price
-                    self.open_trade_tp = tp_price
-                    self.open_trade_trailing_pct = signal.trailing_stop_pct
-                    self.open_trade_peak = order.price
-                    self.total_trades += 1
-                    logger.info("Order filled: trade_id=%s price=%.3f", order.trade_id, order.price)
-                else:
-                    logger.error("Order rejected: %s", order.status)
-            except Exception as e:
-                logger.error("Failed to place order: %s", e)
-                if self.monitor:
-                    self.monitor.send_alert(f"Order failed: {e}")
+        # Place on live account if available
+        if self.oanda_live:
+            self._place_order_on_account(
+                "live", self.oanda_live, signal, candle, sl_price, tp_price, pip_value,
+            )
 
-        if self.monitor and self.open_trade_id:
+        if self.monitor and (self.open_trade_id or self.live_trade_id):
             self.monitor.send_trade(
                 f"OPEN {signal.signal.name} {self.pair} @ {candle.close:.3f} "
                 f"SL={sl_price:.3f} TP={tp_price:.3f} conf={signal.confidence:.3f}"
@@ -608,36 +592,84 @@ class StreamingEngine:
         if self.monitor and self.open_trade_id:
             self.monitor.broadcast_signal(signal, self.pair, candle.close)
 
+    def _place_order_on_account(
+        self,
+        account: str,
+        client: OANDAClient,
+        signal: TradeSignal,
+        candle: Candle,
+        sl_price: float,
+        tp_price: float,
+        pip_value: float,
+    ) -> None:
+        """Place an order on a specific OANDA account (demo or live)."""
+        # Position sizing: fixed-fractional risk based on account balance
+        try:
+            acct = client.get_account_summary()
+            balance = acct.balance
+        except Exception:
+            balance = self.balance
+
+        risk_mult = self._risk_multiplier()
+        effective_risk = self.bt_config.risk_per_trade * risk_mult
+        risk_amount = balance * effective_risk
+        lot = risk_amount / max(signal.stop_loss * pip_value, 1e-9)
+        lot = max(0.01, min(5.0, lot))
+
+        units = int(lot * _LOT_SIZE)
+        if signal.signal == Signal.SELL:
+            units = -units
+
+        logger.info(
+            "Opening %s %s [%s]: units=%d SL=%.3f TP=%.3f conf=%.3f",
+            signal.signal.name, self.pair, account.upper(),
+            units, sl_price, tp_price, signal.confidence,
+        )
+
+        try:
+            order = client.place_market_order(
+                self.pair, units, sl=sl_price, tp=tp_price,
+            )
+            if order.status == "FILLED":
+                if account == "demo":
+                    self.open_trade_id = order.trade_id
+                    self.open_trade_direction = signal.signal
+                    self.open_trade_entry = order.price
+                    self.open_trade_sl = sl_price
+                    self.open_trade_tp = tp_price
+                    self.open_trade_trailing_pct = signal.trailing_stop_pct
+                    self.open_trade_peak = order.price
+                else:
+                    self.live_trade_id = order.trade_id
+                    self.live_trade_direction = signal.signal
+                    self.live_trade_entry = order.price
+                    self.live_trade_sl = sl_price
+                    self.live_trade_tp = tp_price
+                self.total_trades += 1
+                logger.info(
+                    "Order filled [%s]: trade_id=%s price=%.3f",
+                    account.upper(), order.trade_id, order.price,
+                )
+            else:
+                logger.error("Order rejected [%s]: %s", account.upper(), order.status)
+        except Exception as e:
+            logger.error("Failed to place order [%s]: %s", account.upper(), e)
+            if self.monitor:
+                self.monitor.send_alert(f"Order failed [{account}]: {e}")
+
     def _close_position(self, reason: str) -> None:
-        """Close the current open position."""
-        if not self.open_trade_id:
+        """Close the current open positions on both accounts."""
+        if not self.open_trade_id and not self.live_trade_id:
             return
 
-        logger.info("Closing position %s: %s", self.open_trade_id, reason)
+        logger.info("Closing positions: %s", reason)
+        pnl = 0.0
 
-        if self.paper_trading:
-            # Get current price for PnL calculation
+        # Close demo account position
+        if self.open_trade_id:
             try:
-                price_data = self.oanda.get_price(self.pair)
-                if self.open_trade_direction == Signal.BUY:
-                    exit_price = price_data["bid"]
-                else:
-                    exit_price = price_data["ask"]
-            except Exception:
-                exit_price = self.open_trade_entry or 0.0
-
-            pnl = self._calc_pnl(exit_price)
-            self.balance += pnl
-            self.total_pnl += pnl
-            if pnl > 0:
-                self.winning_trades += 1
-            else:
-                self.losing_trades += 1
-        else:
-            try:
-                self.oanda.close_trade(self.open_trade_id)
-                # Sync balance after close
-                account = self.oanda.get_account_summary()
+                self.oanda_demo.close_trade(self.open_trade_id)
+                account = self.oanda_demo.get_account_summary()
                 pnl = account.balance - self.balance
                 self.balance = account.balance
                 self.total_pnl += pnl
@@ -645,11 +677,21 @@ class StreamingEngine:
                     self.winning_trades += 1
                 else:
                     self.losing_trades += 1
+                logger.info("Demo trade closed: %s PnL=%.2f", self.open_trade_id, pnl)
             except Exception as e:
-                logger.error("Failed to close trade: %s", e)
+                logger.error("Failed to close demo trade: %s", e)
                 if self.monitor:
-                    self.monitor.send_alert(f"Close failed: {e}")
-                return
+                    self.monitor.send_alert(f"Demo close failed: {e}")
+
+        # Close live account position
+        if self.live_trade_id and self.oanda_live:
+            try:
+                self.oanda_live.close_trade(self.live_trade_id)
+                logger.info("Live trade closed: %s", self.live_trade_id)
+            except Exception as e:
+                logger.error("Failed to close live trade: %s", e)
+                if self.monitor:
+                    self.monitor.send_alert(f"Live close failed: {e}")
 
         if self.monitor:
             self.monitor.send_trade(
@@ -660,7 +702,7 @@ class StreamingEngine:
         if self.copy_trade_mgr:
             self.copy_trade_mgr.copy_close(reason)
 
-        # Reset position state
+        # Reset demo position state
         self.open_trade_id = None
         self.open_trade_direction = None
         self.open_trade_entry = None
@@ -669,21 +711,15 @@ class StreamingEngine:
         self.open_trade_trailing_pct = 0.0
         self.open_trade_peak = 0.0
 
+        # Reset live position state
+        self.live_trade_id = None
+        self.live_trade_direction = None
+        self.live_trade_entry = None
+        self.live_trade_sl = None
+        self.live_trade_tp = None
+
         # Update equity tracking
         self._update_equity()
-
-    def _calc_pnl(self, exit_price: float) -> float:
-        """Calculate PnL for paper trading."""
-        if not self.open_trade_entry:
-            return 0.0
-        pip = _PIP_SIZE.get(self.pair, 0.01)
-        pip_value = _PIP_VALUE.get(self.pair, 6.5)
-        if self.open_trade_direction == Signal.BUY:
-            pips = (exit_price - self.open_trade_entry) / pip
-        else:
-            pips = (self.open_trade_entry - exit_price) / pip
-        # Rough PnL estimate (1 lot * pip_value * pips)
-        return pips * pip_value
 
     # ── Trailing stop ─────────────────────────────────────────────────────
 
@@ -699,9 +735,11 @@ class StreamingEngine:
                 new_sl = (self.open_trade_entry or candle.close) + move * self.open_trade_trailing_pct
                 if self.open_trade_sl and new_sl > self.open_trade_sl:
                     self.open_trade_sl = new_sl
-                    if not self.paper_trading and self.open_trade_id:
-                        self.oanda.modify_trade(self.open_trade_id, sl=new_sl)
-                        logger.info("Trailing SL updated to %.3f", new_sl)
+                    if self.open_trade_id:
+                        self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                    if self.live_trade_id and self.oanda_live:
+                        self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                    logger.info("Trailing SL updated to %.3f", new_sl)
 
             # Check if SL hit
             if self.open_trade_sl and candle.low <= self.open_trade_sl:
@@ -716,9 +754,11 @@ class StreamingEngine:
                 new_sl = (self.open_trade_entry or candle.close) - move * self.open_trade_trailing_pct
                 if self.open_trade_sl and new_sl < self.open_trade_sl:
                     self.open_trade_sl = new_sl
-                    if not self.paper_trading and self.open_trade_id:
-                        self.oanda.modify_trade(self.open_trade_id, sl=new_sl)
-                        logger.info("Trailing SL updated to %.3f", new_sl)
+                    if self.open_trade_id:
+                        self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                    if self.live_trade_id and self.oanda_live:
+                        self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                    logger.info("Trailing SL updated to %.3f", new_sl)
 
             # Check if SL hit
             if self.open_trade_sl and candle.high >= self.open_trade_sl:
@@ -822,7 +862,6 @@ def main() -> None:
 
     # Load configuration from environment
     pair = os.environ.get("PAIR", "GBP/JPY")
-    paper = os.environ.get("PAPER_TRADING", "true").lower() == "true"
     checkpoint_dir = os.environ.get("CHECKPOINT_DIR", "/data/checkpoints")
     checkpoint_interval = int(os.environ.get("CHECKPOINT_INTERVAL", "100"))
     checkpoint_path = os.environ.get("CHECKPOINT_PATH")
@@ -845,8 +884,20 @@ def main() -> None:
             model.load_state_dict(state)
         logger.info("Loaded model weights from %s", checkpoint_path)
 
-    # OANDA client
-    oanda = OANDAClient()
+    # OANDA clients (demo always, live if configured)
+    oanda_demo = OANDAClient(OANDAConfig.demo_from_env())
+    logger.info("Demo account: %s", oanda_demo.config.account_id)
+
+    oanda_live = None
+    live_cfg = OANDAConfig.live_from_env()
+    if live_cfg is not None:
+        try:
+            oanda_live = OANDAClient(live_cfg)
+            logger.info("Live account: %s", oanda_live.config.account_id)
+        except Exception as e:
+            logger.warning("Live OANDA init failed (continuing demo-only): %s", e)
+    else:
+        logger.info("No live OANDA credentials — trading demo only")
 
     # Monitor
     monitor_config = MonitorConfig.from_env()
@@ -855,14 +906,14 @@ def main() -> None:
     # Create and run engine
     engine = StreamingEngine(
         model=model,
-        oanda=oanda,
+        oanda_demo=oanda_demo,
         pair=pair,
         config=mtf_config,
         bt_config=bt_config,
         checkpoint_dir=checkpoint_dir,
         checkpoint_interval=checkpoint_interval,
         monitor=monitor,
-        paper_trading=paper,
+        oanda_live=oanda_live,
     )
 
     engine.warmup(checkpoint_path)

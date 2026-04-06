@@ -444,28 +444,28 @@
 
                     <!-- Trade History Tab -->
                     <div id="tab-live-history" class="wt-live-tab-pane">
-                        <div class="wt-empty-state" style="padding:1rem">
-                            <p>Connect to OANDA to view trade history</p>
+                        <div style="padding:0.5rem;display:flex;gap:6px;border-bottom:1px solid var(--wt-border)">
+                            <button class="wt-history-filter active" data-filter="all" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px;cursor:pointer">All</button>
+                            <button class="wt-history-filter" data-filter="demo" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px;cursor:pointer">Demo</button>
+                            <button class="wt-history-filter" data-filter="live" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px;cursor:pointer">Live</button>
+                        </div>
+                        <div id="trade-history-list" style="max-height:400px;overflow-y:auto">
+                            <div class="wt-empty-state" style="padding:1rem">
+                                <p>Enable live mode to load trade history</p>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Signals Tab -->
                     <div id="tab-live-signals" class="wt-live-tab-pane">
                         <div class="wt-auto-trade-bar">
-                            <div class="wt-auto-trade-toggle">
-                                <label class="wt-switch" title="Auto-execute trades from model signals">
-                                    <input type="checkbox" id="auto-trade-toggle">
-                                    <span class="wt-switch-slider"></span>
-                                </label>
-                                <span id="auto-trade-label" style="font-size:0.78rem;color:var(--wt-text-muted);margin-left:6px">
-                                    Auto-Trade Off
-                                </span>
-                            </div>
                             <div style="display:flex;align-items:center;gap:8px">
-                                <select id="auto-trade-mode" style="font-size:0.75rem;padding:2px 6px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px">
-                                    <option value="paper" selected>Paper Trading</option>
-                                    <option value="live">Live Trading</option>
-                                </select>
+                                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wt-green);animation:pulse 2s ease infinite"></span>
+                                <span style="font-size:0.78rem;color:var(--wt-green);font-weight:600">Auto-Trade Active</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:6px;font-size:0.72rem;color:var(--wt-text-muted)">
+                                <span id="auto-trade-demo-badge" style="padding:1px 6px;border-radius:3px;background:rgba(88,166,255,0.15);color:#58a6ff">Demo</span>
+                                <span id="auto-trade-live-badge" style="padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--wt-green);display:none">Live</span>
                             </div>
                         </div>
                         <div id="live-signals-log" class="wt-signals-log">

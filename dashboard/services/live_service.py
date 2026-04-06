@@ -129,7 +129,9 @@ class LiveService:
         self._running = False
         self._pair: str = "GBP/JPY"
         self._timeframe: str = "15min"
-        self._oanda = None
+        self._oanda_demo = None   # OANDAClient for practice account (always)
+        self._oanda_live = None   # OANDAClient for live account (optional)
+        self._live_available: bool = False
         self._model = None
         self._model_config = None
         self._device = None
@@ -138,17 +140,23 @@ class LiveService:
         self._status: str = "stopped"  # stopped | starting | running | error
         self._error_msg: str = ""
 
-        # ── Auto-trade state ──────────────────────────────────────────────
-        self._auto_trade: bool = False
-        self._paper_trading: bool = True
-        self._open_trade_id: Optional[str] = None
-        self._open_trade_direction: Optional[str] = None  # "BUY" or "SELL"
-        self._open_trade_entry: float = 0.0
-        self._open_trade_sl: float = 0.0
-        self._open_trade_tp: float = 0.0
+        # ── Auto-trade state (always on — no toggle) ─────────────────────
         self._min_confidence: float = 0.55
         self._risk_per_trade: float = 0.01
         self._trade_log: List[dict] = []  # record of executed trades
+
+        # Per-account position tracking
+        self._demo_trade_id: Optional[str] = None
+        self._demo_trade_direction: Optional[str] = None
+        self._demo_trade_entry: float = 0.0
+        self._demo_trade_sl: float = 0.0
+        self._demo_trade_tp: float = 0.0
+
+        self._live_trade_id: Optional[str] = None
+        self._live_trade_direction: Optional[str] = None
+        self._live_trade_entry: float = 0.0
+        self._live_trade_sl: float = 0.0
+        self._live_trade_tp: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -178,17 +186,31 @@ class LiveService:
         self._status = "starting"
         self._error_msg = ""
 
-        # Lazy-init OANDA client
-        if self._oanda is None:
+        # Lazy-init OANDA clients (demo always, live if configured)
+        if self._oanda_demo is None:
             try:
-                from wavetrader.oanda import OANDAClient
-                self._oanda = OANDAClient()
-                logger.info("OANDA client initialised")
+                from wavetrader.oanda import OANDAClient, OANDAConfig
+                demo_cfg = OANDAConfig.demo_from_env()
+                self._oanda_demo = OANDAClient(demo_cfg)
+                logger.info("OANDA demo client initialised (account %s)", demo_cfg.account_id)
             except Exception as e:
                 self._status = "error"
-                self._error_msg = f"OANDA init failed: {e}"
+                self._error_msg = f"OANDA demo init failed: {e}"
                 self._running = False
                 return {"status": "error", "error": str(e)}
+
+        if self._oanda_live is None and not self._live_available:
+            try:
+                from wavetrader.oanda import OANDAClient, OANDAConfig
+                live_cfg = OANDAConfig.live_from_env()
+                if live_cfg is not None:
+                    self._oanda_live = OANDAClient(live_cfg)
+                    self._live_available = True
+                    logger.info("OANDA live client initialised (account %s)", live_cfg.account_id)
+                else:
+                    logger.info("No live OANDA credentials — trading demo only")
+            except Exception as e:
+                logger.warning("OANDA live init failed (continuing demo-only): %s", e)
 
         # Lazy-load model
         if self._model is None:
@@ -211,12 +233,13 @@ class LiveService:
 
     def get_live_candles(self, pair: str, granularity: str, count: int = 300) -> list:
         """Fetch recent candles from OANDA for the chart (one-shot, not streaming)."""
-        if self._oanda is None:
+        if self._oanda_demo is None:
             try:
-                from wavetrader.oanda import OANDAClient
-                self._oanda = OANDAClient()
+                from wavetrader.oanda import OANDAClient, OANDAConfig
+                demo_cfg = OANDAConfig.demo_from_env()
+                self._oanda_demo = OANDAClient(demo_cfg)
             except Exception as e:
-                logger.error("Cannot init OANDA: %s", e)
+                logger.error("Cannot init OANDA demo: %s", e)
                 return []
 
         from wavetrader.oanda import tf_to_granularity
@@ -226,7 +249,7 @@ class LiveService:
             gran = granularity
 
         try:
-            candles = self._oanda.get_candles(pair, gran, count=count)
+            candles = self._oanda_demo.get_candles(pair, gran, count=count)
             return [
                 {
                     "time": int(c.timestamp.timestamp()),
@@ -244,45 +267,98 @@ class LiveService:
             return []
 
     def get_account(self) -> dict:
-        """Fetch current OANDA account state."""
-        if not self._oanda:
-            return {"error": "OANDA not connected"}
-        try:
-            acct = self._oanda.get_account_summary()
-            return {
-                "balance": acct.balance,
-                "nav": acct.nav,
-                "unrealized_pnl": acct.unrealized_pnl,
-                "margin_used": acct.margin_used,
-                "open_trades": acct.open_trade_count,
-                "currency": acct.currency,
-                "market_open": self._oanda.is_market_open(),
-            }
-        except Exception as e:
-            return {"error": str(e)}
+        """Fetch current OANDA account state (both demo and live)."""
+        result: dict = {}
+
+        # Demo account (always)
+        if self._oanda_demo:
+            try:
+                acct = self._oanda_demo.get_account_summary()
+                result["demo"] = {
+                    "balance": acct.balance,
+                    "nav": acct.nav,
+                    "unrealized_pnl": acct.unrealized_pnl,
+                    "margin_used": acct.margin_used,
+                    "open_trades": acct.open_trade_count,
+                    "currency": acct.currency,
+                }
+                # For backward compat, also set top-level fields from demo
+                result["balance"] = acct.balance
+                result["nav"] = acct.nav
+                result["unrealized_pnl"] = acct.unrealized_pnl
+                result["margin_used"] = acct.margin_used
+                result["open_trades"] = acct.open_trade_count
+                result["currency"] = acct.currency
+                result["market_open"] = self._oanda_demo.is_market_open()
+            except Exception as e:
+                result["demo"] = {"error": str(e)}
+        else:
+            result["demo"] = {"error": "OANDA demo not connected"}
+
+        # Live account (optional)
+        if self._oanda_live:
+            try:
+                acct = self._oanda_live.get_account_summary()
+                result["live"] = {
+                    "balance": acct.balance,
+                    "nav": acct.nav,
+                    "unrealized_pnl": acct.unrealized_pnl,
+                    "margin_used": acct.margin_used,
+                    "open_trades": acct.open_trade_count,
+                    "currency": acct.currency,
+                }
+            except Exception as e:
+                result["live"] = {"error": str(e)}
+        else:
+            result["live"] = {"status": "not_configured"}
+
+        result["live_available"] = self._live_available
+        return result
 
     def get_open_trades(self) -> list:
-        """Fetch open trades from OANDA."""
-        if not self._oanda:
-            return []
-        try:
-            trades = self._oanda.get_open_trades(self._pair)
-            return [
-                {
-                    "trade_id": t.trade_id,
-                    "instrument": t.instrument,
-                    "units": t.units,
-                    "price": t.price,
-                    "unrealized_pnl": t.unrealized_pnl,
-                    "stop_loss": t.stop_loss,
-                    "take_profit": t.take_profit,
-                    "direction": "BUY" if t.units > 0 else "SELL",
-                }
-                for t in trades
-            ]
-        except Exception as e:
-            logger.error("get_open_trades: %s", e)
-            return []
+        """Fetch open trades from both OANDA accounts."""
+        all_trades = []
+
+        for label, client in [("demo", self._oanda_demo), ("live", self._oanda_live)]:
+            if not client:
+                continue
+            try:
+                trades = client.get_open_trades(self._pair)
+                for t in trades:
+                    all_trades.append({
+                        "trade_id": t.trade_id,
+                        "instrument": t.instrument,
+                        "units": t.units,
+                        "price": t.price,
+                        "unrealized_pnl": t.unrealized_pnl,
+                        "stop_loss": t.stop_loss,
+                        "take_profit": t.take_profit,
+                        "direction": "BUY" if t.units > 0 else "SELL",
+                        "account": label,
+                    })
+            except Exception as e:
+                logger.error("get_open_trades (%s): %s", label, e)
+
+        return all_trades
+
+    def get_trade_history(self, pair: Optional[str] = None, count: int = 50) -> list:
+        """Fetch trade history from both OANDA accounts (open + closed)."""
+        all_trades = []
+
+        for label, client in [("demo", self._oanda_demo), ("live", self._oanda_live)]:
+            if not client:
+                continue
+            try:
+                trades = client.get_trade_history(pair=pair or self._pair, state="ALL", count=count)
+                for t in trades:
+                    t["account"] = label
+                all_trades.extend(trades)
+            except Exception as e:
+                logger.error("get_trade_history (%s): %s", label, e)
+
+        # Sort by open_time descending
+        all_trades.sort(key=lambda t: t.get("open_time", ""), reverse=True)
+        return all_trades
 
     def sse_stream(self) -> Generator[str, None, None]:
         """Generator for SSE endpoint — yields event strings."""
@@ -302,32 +378,25 @@ class LiveService:
         finally:
             self.broadcaster.unsubscribe(q)
 
-    # ── Auto-Trade ────────────────────────────────────────────────────────
+    # ── Auto-Trade (always on) ───────────────────────────────────
 
     @property
     def auto_trade_status(self) -> dict:
         return {
-            "enabled": self._auto_trade,
-            "paper_trading": self._paper_trading,
-            "open_trade": self._open_trade_id,
-            "open_direction": self._open_trade_direction,
+            "enabled": True,
+            "demo_active": self._oanda_demo is not None,
+            "live_active": self._live_available,
+            "demo_trade": self._demo_trade_id,
+            "live_trade": self._live_trade_id,
+            "demo_direction": self._demo_trade_direction,
+            "live_direction": self._live_trade_direction,
             "min_confidence": self._min_confidence,
             "risk_per_trade": self._risk_per_trade,
             "recent_trades": self._trade_log[-10:],
         }
 
-    def set_auto_trade(self, enabled: bool, paper: bool = True) -> dict:
-        """Enable or disable automatic trade execution."""
-        self._auto_trade = enabled
-        self._paper_trading = paper
-        logger.info("Auto-trade %s (paper=%s)", "ENABLED" if enabled else "DISABLED", paper)
-        return self.auto_trade_status
-
     def _execute_signal(self, signal_dict: dict, current_price: float) -> None:
-        """Execute a trade based on model signal — mirrors StreamingEngine logic."""
-        if not self._auto_trade:
-            return
-
+        """Execute a trade based on model signal on both accounts."""
         sig = signal_dict["signal"]  # "BUY", "SELL", "HOLD"
         conf = signal_dict["confidence"]
 
@@ -335,16 +404,24 @@ class LiveService:
         if conf < self._min_confidence or sig == "HOLD":
             return
 
-        # Close opposite position first
-        if self._open_trade_id and self._open_trade_direction != sig:
-            self._close_live_position("Signal reversal")
+        # Close opposite positions first
+        if self._demo_trade_id and self._demo_trade_direction != sig:
+            self._close_position_on("demo", "Signal reversal")
+        if self._live_trade_id and self._live_trade_direction != sig:
+            self._close_position_on("live", "Signal reversal")
 
-        # Open new if flat
-        if self._open_trade_id is None:
-            self._open_live_position(signal_dict, current_price)
+        # Open new positions if flat
+        if self._demo_trade_id is None:
+            self._open_position_on("demo", signal_dict, current_price)
+        if self._live_available and self._live_trade_id is None:
+            self._open_position_on("live", signal_dict, current_price)
 
-    def _open_live_position(self, signal_dict: dict, current_price: float) -> None:
-        """Open a position via OANDA (or paper)."""
+    def _open_position_on(self, account: str, signal_dict: dict, current_price: float) -> None:
+        """Open a position via OANDA on the specified account (demo or live)."""
+        client = self._oanda_demo if account == "demo" else self._oanda_live
+        if not client:
+            return
+
         _PIP_SIZE = {"GBP/JPY": 0.01, "EUR/JPY": 0.01, "USD/JPY": 0.01, "GBP/USD": 0.0001}
         _PIP_VALUE = {"GBP/JPY": 6.5, "EUR/JPY": 6.7, "USD/JPY": 6.5, "GBP/USD": 10.0}
 
@@ -352,10 +429,10 @@ class LiveService:
         pip = _PIP_SIZE.get(self._pair, 0.01)
         pip_value = _PIP_VALUE.get(self._pair, 6.5)
 
-        # Get balance from OANDA
+        # Get balance from the specific account
         try:
-            acct = self.get_account()
-            balance = acct.get("balance", 25000)
+            acct = client.get_account_summary()
+            balance = acct.balance
         except Exception:
             balance = 25000
 
@@ -386,68 +463,81 @@ class LiveService:
             "tp": round(tp_price, 5),
             "confidence": signal_dict["confidence"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "paper": self._paper_trading,
+            "account": account,
         }
 
-        if self._paper_trading:
-            self._open_trade_id = f"paper_{int(time.time())}"
-            self._open_trade_direction = sig
-            self._open_trade_entry = current_price
-            self._open_trade_sl = sl_price
-            self._open_trade_tp = tp_price
-            trade_record["trade_id"] = self._open_trade_id
-            trade_record["status"] = "filled_paper"
-            logger.info("Paper trade opened: %s %s @ %.3f", sig, self._pair, current_price)
-        else:
-            try:
-                order = self._oanda.place_market_order(
-                    self._pair, units, sl=sl_price, tp=tp_price,
-                )
-                if order.status == "FILLED":
-                    self._open_trade_id = order.trade_id
-                    self._open_trade_direction = sig
-                    self._open_trade_entry = order.price
-                    self._open_trade_sl = sl_price
-                    self._open_trade_tp = tp_price
-                    trade_record["trade_id"] = order.trade_id
-                    trade_record["status"] = "filled"
-                    logger.info("OANDA order filled: %s @ %.3f", order.trade_id, order.price)
+        try:
+            order = client.place_market_order(
+                self._pair, units, sl=sl_price, tp=tp_price,
+            )
+            if order.status == "FILLED":
+                trade_record["trade_id"] = order.trade_id
+                trade_record["status"] = "filled"
+                if account == "demo":
+                    self._demo_trade_id = order.trade_id
+                    self._demo_trade_direction = sig
+                    self._demo_trade_entry = order.price
+                    self._demo_trade_sl = sl_price
+                    self._demo_trade_tp = tp_price
                 else:
-                    trade_record["status"] = f"rejected: {order.status}"
-                    logger.error("Order rejected: %s", order.status)
-            except Exception as e:
-                trade_record["status"] = f"error: {e}"
-                logger.error("Failed to place order: %s", e)
+                    self._live_trade_id = order.trade_id
+                    self._live_trade_direction = sig
+                    self._live_trade_entry = order.price
+                    self._live_trade_sl = sl_price
+                    self._live_trade_tp = tp_price
+                logger.info(
+                    "OANDA [%s] order filled: %s @ %.3f",
+                    account.upper(), order.trade_id, order.price,
+                )
+            else:
+                trade_record["status"] = f"rejected: {order.status}"
+                logger.error("OANDA [%s] order rejected: %s", account.upper(), order.status)
+        except Exception as e:
+            trade_record["status"] = f"error: {e}"
+            logger.error("OANDA [%s] failed to place order: %s", account.upper(), e)
 
         self._trade_log.append(trade_record)
-        # Broadcast the trade event to frontend
         self.broadcaster.publish("trade_executed", trade_record)
 
-    def _close_live_position(self, reason: str) -> None:
-        """Close the current open position."""
-        if not self._open_trade_id:
+    def _close_position_on(self, account: str, reason: str) -> None:
+        """Close the current open position on the specified account."""
+        if account == "demo":
+            trade_id = self._demo_trade_id
+            direction = self._demo_trade_direction
+        else:
+            trade_id = self._live_trade_id
+            direction = self._live_trade_direction
+
+        if not trade_id:
             return
 
+        client = self._oanda_demo if account == "demo" else self._oanda_live
+
         close_record = {
-            "trade_id": self._open_trade_id,
-            "direction": self._open_trade_direction,
+            "trade_id": trade_id,
+            "direction": direction,
             "pair": self._pair,
             "reason": reason,
+            "account": account,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        if self._paper_trading:
-            logger.info("Paper trade closed: %s (%s)", self._open_trade_id, reason)
-        else:
+        if client:
             try:
-                self._oanda.close_trade(self._open_trade_id)
-                logger.info("OANDA trade closed: %s (%s)", self._open_trade_id, reason)
+                client.close_trade(trade_id)
+                logger.info("OANDA [%s] trade closed: %s (%s)", account.upper(), trade_id, reason)
             except Exception as e:
-                logger.error("Failed to close trade %s: %s", self._open_trade_id, e)
+                logger.error("OANDA [%s] failed to close trade %s: %s", account.upper(), trade_id, e)
 
-        self._open_trade_id = None
-        self._open_trade_direction = None
-        self._open_trade_entry = 0.0
+        if account == "demo":
+            self._demo_trade_id = None
+            self._demo_trade_direction = None
+            self._demo_trade_entry = 0.0
+        else:
+            self._live_trade_id = None
+            self._live_trade_direction = None
+            self._live_trade_entry = 0.0
+
         self.broadcaster.publish("trade_closed", close_record)
 
     # ── Model loading ─────────────────────────────────────────────────────
@@ -602,7 +692,7 @@ class LiveService:
         try:
             for tf in (self._model_config.timeframes if self._model_config else [self._timeframe]):
                 gran = tf_to_granularity(tf)
-                candles = self._oanda.get_candles(self._pair, gran, count=300)
+                candles = self._oanda_demo.get_candles(self._pair, gran, count=300)
                 if candles:
                     tf_history[tf] = [
                         {
@@ -628,7 +718,7 @@ class LiveService:
             try:
                 # Poll for new entry-TF candle
                 gran = tf_to_granularity(self._timeframe)
-                candles = self._oanda.get_candles(self._pair, gran, count=3)
+                candles = self._oanda_demo.get_candles(self._pair, gran, count=3)
 
                 for c in candles:
                     candle_time = int(c.timestamp.timestamp())
@@ -671,7 +761,7 @@ class LiveService:
                                 if tf != self._timeframe:
                                     try:
                                         g = tf_to_granularity(tf)
-                                        htf_candles = self._oanda.get_candles(self._pair, g, count=200)
+                                        htf_candles = self._oanda_demo.get_candles(self._pair, g, count=200)
                                         tf_history[tf] = [
                                             {
                                                 "time": int(hc.timestamp.timestamp()),
@@ -689,12 +779,12 @@ class LiveService:
                             signal = self._run_inference(tf_history)
                             if signal:
                                 self.broadcaster.publish("signal", signal)
-                                # Auto-execute trade if enabled
+                                # Auto-execute trade on both accounts
                                 self._execute_signal(signal, c.close)
 
                 # Also push current price
                 try:
-                    price = self._oanda.get_price(self._pair)
+                    price = self._oanda_demo.get_price(self._pair)
                     self.broadcaster.publish("price", {
                         "bid": price["bid"],
                         "ask": price["ask"],

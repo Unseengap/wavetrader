@@ -85,22 +85,29 @@ def get_trades():
     return jsonify({"trades": svc.get_open_trades()})
 
 
-# ── Auto-Trade Toggle ─────────────────────────────────────────────────────────
+# ── Auto-Trade Status (always on) ─────────────────────────────────────────
 
 @live_bp.route("/auto-trade", methods=["GET"])
 def get_auto_trade():
-    """Return current auto-trade status."""
+    """Return current auto-trade status (always enabled)."""
     svc = get_live_service()
     return jsonify(svc.auto_trade_status)
 
 
 @live_bp.route("/auto-trade", methods=["POST"])
 def set_auto_trade():
-    """Enable or disable automatic trade execution."""
-    data = request.get_json(force=True, silent=True) or {}
-    enabled = bool(data.get("enabled", False))
-    paper = bool(data.get("paper", True))
-
+    """Auto-trade is always on — returns current status."""
     svc = get_live_service()
-    result = svc.set_auto_trade(enabled, paper)
-    return jsonify(result)
+    return jsonify(svc.auto_trade_status)
+
+
+# ── Trade History ─────────────────────────────────────────────────────────
+
+@live_bp.route("/trade-history", methods=["GET"])
+def get_trade_history():
+    """Fetch trade history from both OANDA demo and live accounts."""
+    pair = request.args.get("pair")
+    count = int(request.args.get("count", 50))
+    svc = get_live_service()
+    trades = svc.get_trade_history(pair=pair, count=count)
+    return jsonify({"trades": trades})

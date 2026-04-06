@@ -67,6 +67,9 @@ async function enableLiveMode() {
     // 4. Load account
     await refreshAccount();
 
+    // 5. Load trade history from broker
+    await loadTradeHistory();
+
     showToast('Live mode enabled — streaming from OANDA', 'success');
 }
 
@@ -321,10 +324,11 @@ function connectSSE() {
         try {
             const t = JSON.parse(e.data);
             appendTradeLog(t);
-            showToast(`Trade ${t.signal} ${t.pair} @ ${t.entry_price} (${t.paper ? 'Paper' : 'LIVE'})`,
+            const accountLabel = t.account === 'live' ? 'LIVE' : 'Demo';
+            showToast(`Trade ${t.signal} ${t.pair} @ ${t.entry_price} (${accountLabel})`,
                 t.signal === 'BUY' ? 'success' : 'error');
-            // Refresh account after trade
             refreshAccount();
+            loadTradeHistory();
         } catch (err) {
             console.error('trade_executed parse error:', err);
         }
@@ -335,8 +339,10 @@ function connectSSE() {
         if (!liveMode) return;
         try {
             const t = JSON.parse(e.data);
-            showToast(`Position closed: ${t.reason}`, 'info');
+            const accountLabel = t.account === 'live' ? 'LIVE' : 'Demo';
+            showToast(`Position closed (${accountLabel}): ${t.reason}`, 'info');
             refreshAccount();
+            loadTradeHistory();
         } catch (err) {}
     });
 }
@@ -414,51 +420,35 @@ function setText(id, text) {
     if (el) el.textContent = text;
 }
 
-// ── Auto-Trade Toggle ───────────────────────────────────────────────────────
+// ── Auto-Trade Status (always on — no toggle) ──────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-    const toggle = document.getElementById('auto-trade-toggle');
-    if (toggle) {
-        toggle.addEventListener('change', async (e) => {
-            const enabled = e.target.checked;
-            const mode = document.getElementById('auto-trade-mode');
-            const paper = mode ? mode.value === 'paper' : true;
-            try {
-                const resp = await fetch('/api/live/auto-trade', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled, paper }),
-                });
-                const data = await resp.json();
-                const label = document.getElementById('auto-trade-label');
-                if (label) {
-                    label.textContent = data.enabled
-                        ? `Auto-Trade ON (${data.paper_trading ? 'Paper' : 'LIVE'})`
-                        : 'Auto-Trade Off';
-                    label.style.color = data.enabled ? 'var(--wt-green)' : 'var(--wt-text-muted)';
-                }
-                showToast(
-                    data.enabled ? 'Auto-trade enabled — signals will execute trades' : 'Auto-trade disabled',
-                    data.enabled ? 'success' : 'info'
-                );
-            } catch (err) {
-                showToast('Failed to toggle auto-trade: ' + err.message, 'error');
-                e.target.checked = !enabled;
+    // Fetch auto-trade status to show demo/live badges
+    fetch('/api/live/auto-trade')
+        .then(r => r.json())
+        .then(data => {
+            const liveBadge = document.getElementById('auto-trade-live-badge');
+            if (liveBadge && data.live_active) {
+                liveBadge.style.display = 'inline';
             }
-        });
-    }
+        })
+        .catch(() => {});
 
-    // Mode selector change
-    const modeSelect = document.getElementById('auto-trade-mode');
-    if (modeSelect) {
-        modeSelect.addEventListener('change', async () => {
-            const toggle = document.getElementById('auto-trade-toggle');
-            if (toggle && toggle.checked) {
-                // Re-send with updated mode
-                toggle.dispatchEvent(new Event('change'));
-            }
+    // Trade history filter buttons
+    document.querySelectorAll('.wt-history-filter').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.wt-history-filter').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const filter = btn.dataset.filter;
+            document.querySelectorAll('.wt-history-entry').forEach(row => {
+                if (filter === 'all' || row.dataset.account === filter) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
         });
-    }
+    });
 });
 
 // ── Signal & Trade Logging ──────────────────────────────────────────────────
@@ -499,18 +489,70 @@ function appendTradeLog(trade) {
 
     const color = trade.signal === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
     const ts = trade.timestamp ? new Date(trade.timestamp).toLocaleTimeString() : '—';
+    const accountLabel = trade.account === 'live'
+        ? '<span style="color:var(--wt-green);font-weight:600">LIVE</span>'
+        : '<span style="color:#58a6ff">Demo</span>';
     const html = `
         <div class="wt-signal-log-entry" style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border);font-size:0.78rem;background:rgba(88,166,255,0.06)">
             <div style="display:flex;justify-content:space-between;align-items:center">
-                <span><i class="bi bi-arrow-left-right"></i> <strong style="color:${color}">TRADE ${trade.signal}</strong></span>
+                <span><i class="bi bi-arrow-left-right"></i> <strong style="color:${color}">TRADE ${trade.signal}</strong> ${accountLabel}</span>
                 <span style="font-size:0.68rem;color:var(--wt-text-muted)">${ts}</span>
             </div>
             <div style="color:var(--wt-text-muted);font-size:0.68rem">
-                @ ${trade.entry_price} | SL: ${trade.sl} | TP: ${trade.tp} | ${trade.paper ? 'Paper' : 'LIVE'} | ${trade.status}
+                @ ${trade.entry_price} | SL: ${trade.sl} | TP: ${trade.tp} | ${trade.status}
             </div>
         </div>
     `;
     log.insertAdjacentHTML('afterbegin', html);
+}
+
+// ── Trade History from Broker ────────────────────────────────────────────────
+
+async function loadTradeHistory() {
+    const list = document.getElementById('trade-history-list');
+    if (!list) return;
+
+    try {
+        const resp = await fetch('/api/live/trade-history?count=50');
+        const data = await resp.json();
+        const trades = data.trades || [];
+
+        if (trades.length === 0) {
+            list.innerHTML = '<div class="wt-empty-state" style="padding:1rem"><p>No trade history yet</p></div>';
+            return;
+        }
+
+        let html = '';
+        for (const t of trades) {
+            const dir = parseFloat(t.units) > 0 ? 'BUY' : 'SELL';
+            const dirColor = dir === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
+            const pl = parseFloat(t.realized_pl || 0);
+            const plColor = pl >= 0 ? 'var(--wt-green)' : 'var(--wt-red)';
+            const plStr = pl >= 0 ? `+${pl.toFixed(2)}` : pl.toFixed(2);
+            const accountBg = t.account === 'live' ? 'rgba(63,185,80,0.12)' : 'rgba(88,166,255,0.08)';
+            const accountColor = t.account === 'live' ? 'var(--wt-green)' : '#58a6ff';
+            const state = t.state === 'OPEN' ? '<span style="color:var(--wt-yellow)">OPEN</span>' : '<span style="color:var(--wt-text-muted)">CLOSED</span>';
+            const openTime = t.open_time ? new Date(t.open_time).toLocaleString() : '—';
+
+            html += `
+                <div class="wt-history-entry" data-account="${t.account}" style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--wt-border);font-size:0.75rem;background:${accountBg}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span>
+                            <strong style="color:${dirColor}">${dir}</strong>
+                            <span style="color:${accountColor};font-size:0.65rem;margin-left:4px">${t.account.toUpperCase()}</span>
+                        </span>
+                        <span style="color:${plColor};font-weight:600">${plStr}</span>
+                    </div>
+                    <div style="color:var(--wt-text-muted);font-size:0.68rem;margin-top:2px">
+                        ${t.instrument} @ ${parseFloat(t.price).toFixed(3)} | ${state} | ${openTime}
+                    </div>
+                </div>
+            `;
+        }
+        list.innerHTML = html;
+    } catch (err) {
+        console.error('loadTradeHistory error:', err);
+    }
 }
 
 // ── Sidebar Split (Performance + Live Feed) ─────────────────────────────────
