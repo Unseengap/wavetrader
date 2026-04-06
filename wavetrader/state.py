@@ -149,7 +149,8 @@ class StateManager:
             logger.info("No checkpoint found at %s — cold start", load_path)
             return None
 
-        checkpoint = torch.load(load_path, weights_only=False)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        checkpoint = torch.load(load_path, weights_only=False, map_location=device)
         logger.info(
             "Loaded checkpoint from %s (bar_count=%d)",
             load_path,
@@ -161,7 +162,10 @@ class StateManager:
         self, model: torch.nn.Module, checkpoint: Dict[str, Any]
     ) -> None:
         """Restore model weights from checkpoint."""
-        model.load_state_dict(checkpoint["model_state_dict"])
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            model.load_state_dict(checkpoint)
         logger.info("Model weights restored")
 
     def restore_resonance_buffer(

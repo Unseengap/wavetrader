@@ -539,11 +539,23 @@ class StreamingEngine:
 
     def _execute_signal(self, signal: TradeSignal, candle: Candle) -> None:
         """Execute a trade signal: open, hold, or close positions on both accounts."""
-        # Skip low-confidence signals
-        if signal.confidence < self.bt_config.min_confidence:
+        logger.info(
+            "Evaluating signal: %s conf=%.4f threshold=%.2f price=%.3f",
+            signal.signal.name, signal.confidence, self.bt_config.min_confidence,
+            candle.close,
+        )
+
+        # Skip HOLD signals
+        if signal.signal == Signal.HOLD:
+            logger.info("Skipping HOLD signal")
             return
 
-        if signal.signal == Signal.HOLD:
+        # Skip low-confidence signals
+        if signal.confidence < self.bt_config.min_confidence:
+            logger.warning(
+                "Skipping %s: confidence %.4f < threshold %.2f",
+                signal.signal.name, signal.confidence, self.bt_config.min_confidence,
+            )
             return
 
         # If we have an open position in the opposite direction, close both accounts
@@ -871,6 +883,7 @@ def main() -> None:
     mtf_config = MTFConfig(pair=pair)
     bt_config = BacktestConfig(
         initial_balance=float(os.environ.get("INITIAL_BALANCE", "10000")),
+        min_confidence=float(os.environ.get("MIN_CONFIDENCE", "0.30")),
     )
 
     # Load model
@@ -878,7 +891,8 @@ def main() -> None:
 
     # If a trained checkpoint exists, load weights
     if checkpoint_path and os.path.exists(checkpoint_path):
-        state = torch.load(checkpoint_path, weights_only=False)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        state = torch.load(checkpoint_path, weights_only=False, map_location=device)
         if "model_state_dict" in state:
             model.load_state_dict(state["model_state_dict"])
         else:

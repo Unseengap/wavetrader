@@ -141,9 +141,10 @@ class LiveService:
         self._error_msg: str = ""
 
         # ── Auto-trade state (always on — no toggle) ─────────────────────
-        self._min_confidence: float = 0.55
-        self._risk_per_trade: float = 0.01
+        self._min_confidence: float = float(os.environ.get("MIN_CONFIDENCE", "0.30"))
+        self._risk_per_trade: float = float(os.environ.get("RISK_PER_TRADE", "0.01"))
         self._trade_log: List[dict] = []  # record of executed trades
+        self._signal_history: List[dict] = []  # last N signals for diagnostics
 
         # Per-account position tracking
         self._demo_trade_id: Optional[str] = None
@@ -215,6 +216,9 @@ class LiveService:
         # Lazy-load model
         if self._model is None:
             self._load_model()
+
+        # Sync existing open positions from OANDA so we don't duplicate
+        self._sync_open_positions()
 
         self._thread = threading.Thread(
             target=self._stream_loop, daemon=True, name="live-stream"
@@ -378,6 +382,46 @@ class LiveService:
         finally:
             self.broadcaster.unsubscribe(q)
 
+    # ── Position sync ────────────────────────────────────────────
+
+    def _sync_open_positions(self) -> None:
+        """Check OANDA for existing open positions so we don't duplicate trades."""
+        # Demo account
+        if self._oanda_demo and self._demo_trade_id is None:
+            try:
+                trades = self._oanda_demo.get_open_trades(self._pair)
+                if trades:
+                    t = trades[0]
+                    self._demo_trade_id = t.trade_id
+                    self._demo_trade_direction = "BUY" if t.units > 0 else "SELL"
+                    self._demo_trade_entry = t.price
+                    self._demo_trade_sl = t.stop_loss or 0.0
+                    self._demo_trade_tp = t.take_profit or 0.0
+                    logger.info(
+                        "Synced existing demo position: %s %s @ %.3f",
+                        t.trade_id, self._demo_trade_direction, t.price,
+                    )
+            except Exception as e:
+                logger.warning("Could not sync demo positions: %s", e)
+
+        # Live account
+        if self._oanda_live and self._live_trade_id is None:
+            try:
+                trades = self._oanda_live.get_open_trades(self._pair)
+                if trades:
+                    t = trades[0]
+                    self._live_trade_id = t.trade_id
+                    self._live_trade_direction = "BUY" if t.units > 0 else "SELL"
+                    self._live_trade_entry = t.price
+                    self._live_trade_sl = t.stop_loss or 0.0
+                    self._live_trade_tp = t.take_profit or 0.0
+                    logger.info(
+                        "Synced existing live position: %s %s @ %.3f",
+                        t.trade_id, self._live_trade_direction, t.price,
+                    )
+            except Exception as e:
+                logger.warning("Could not sync live positions: %s", e)
+
     # ── Auto-Trade (always on) ───────────────────────────────────
 
     @property
@@ -393,6 +437,7 @@ class LiveService:
             "min_confidence": self._min_confidence,
             "risk_per_trade": self._risk_per_trade,
             "recent_trades": self._trade_log[-10:],
+            "recent_signals": self._signal_history[-10:],
         }
 
     def _execute_signal(self, signal_dict: dict, current_price: float) -> None:
@@ -400,8 +445,32 @@ class LiveService:
         sig = signal_dict["signal"]  # "BUY", "SELL", "HOLD"
         conf = signal_dict["confidence"]
 
-        # Skip low-confidence or HOLD
-        if conf < self._min_confidence or sig == "HOLD":
+        # Track all signals for diagnostics
+        self._signal_history.append({
+            "signal": sig,
+            "confidence": conf,
+            "alignment": signal_dict.get("alignment", 0),
+            "timestamp": signal_dict.get("timestamp", ""),
+            "price": current_price,
+        })
+        self._signal_history = self._signal_history[-50:]
+
+        logger.info(
+            "Signal received: %s conf=%.4f align=%.4f price=%.3f (threshold=%.2f)",
+            sig, conf, signal_dict.get("alignment", 0), current_price, self._min_confidence,
+        )
+
+        # Skip HOLD signals
+        if sig == "HOLD":
+            logger.info("Skipping HOLD signal")
+            return
+
+        # Skip low-confidence signals
+        if conf < self._min_confidence:
+            logger.warning(
+                "Skipping %s signal: confidence %.4f < threshold %.2f",
+                sig, conf, self._min_confidence,
+            )
             return
 
         # Close opposite positions first
@@ -421,6 +490,28 @@ class LiveService:
         client = self._oanda_demo if account == "demo" else self._oanda_live
         if not client:
             return
+
+        # Safety: check OANDA for existing positions to prevent FIFO violations
+        try:
+            existing = client.get_open_trades(self._pair)
+            if existing:
+                t = existing[0]
+                direction = "BUY" if t.units > 0 else "SELL"
+                if account == "demo":
+                    self._demo_trade_id = t.trade_id
+                    self._demo_trade_direction = direction
+                    self._demo_trade_entry = t.price
+                else:
+                    self._live_trade_id = t.trade_id
+                    self._live_trade_direction = direction
+                    self._live_trade_entry = t.price
+                logger.info(
+                    "Already have open %s position [%s] %s @ %.3f — skipping new order",
+                    direction, account.upper(), t.trade_id, t.price,
+                )
+                return
+        except Exception as e:
+            logger.warning("Could not check existing trades [%s]: %s", account, e)
 
         _PIP_SIZE = {"GBP/JPY": 0.01, "EUR/JPY": 0.01, "USD/JPY": 0.01, "GBP/USD": 0.0001}
         _PIP_VALUE = {"GBP/JPY": 6.5, "EUR/JPY": 6.7, "USD/JPY": 6.5, "GBP/USD": 10.0}
@@ -466,6 +557,10 @@ class LiveService:
             "account": account,
         }
 
+        logger.info(
+            "Placing order [%s]: %s %d units %s SL=%.3f TP=%.3f",
+            account.upper(), sig, units, self._pair, sl_price, tp_price,
+        )
         try:
             order = client.place_market_order(
                 self._pair, units, sl=sl_price, tp=tp_price,
