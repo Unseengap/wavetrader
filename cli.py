@@ -61,10 +61,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--mode",
-        choices=["train", "backtest", "demo", "mtf", "preprocess", "live",
+        choices=["train", "backtest", "demo", "mtf", "mtf_v2", "preprocess", "live",
                  "add-user", "remove-user", "list-users", "user-status"],
         default="demo",
-        help="train | backtest | demo | mtf | preprocess | live | add-user | remove-user | list-users | user-status",
+        help="train | backtest | demo | mtf | mtf_v2 | preprocess | live | add-user | remove-user | list-users | user-status",
     )
     p.add_argument("--pair",      default="GBP/JPY",  help="Forex pair")
     p.add_argument("--timeframe", default="15min",    help="Entry timeframe")
@@ -221,6 +221,45 @@ def run_mtf(args: argparse.Namespace, device: torch.device) -> None:
             model, train_loader, val_loader, config, device, checkpoint=ckpt
         )
         print(f"\nBest val accuracy: {max(history['val_accuracy']):.2%}")
+
+    if os.path.exists(ckpt):
+        model.load_state_dict(torch.load(ckpt, weights_only=True))
+        print(f"Loaded checkpoint: {ckpt}")
+
+
+def run_mtf_v2(args: argparse.Namespace, device: torch.device) -> None:
+    print("\n" + "=" * 70)
+    print("WAVETRADER  MULTI-TIMEFRAME v2")
+    print("=" * 70)
+
+    config = wt.MTFv2Config(pair=args.pair, epochs=args.epochs)
+
+    print(f"\nLoading multi-timeframe data for {args.pair} from '{args.data}'...")
+    mtf_data = wt.load_mtf_data(args.pair, data_dir=args.data)
+    for tf, df in mtf_data.items():
+        print(f"  {tf}: {len(df):,} bars")
+
+    train_data, val_data, test_data = wt.chronological_split_mtf(mtf_data)
+
+    model = wt.WaveTraderMTFv2(config)
+    print(f"\nModel parameters: {model.count_parameters():,}")
+
+    ckpt = args.checkpoint or "wavetrader_mtf_v2_best.pt"
+
+    train_ds = wt.MTFForexDatasetV2(train_data, config, pair=args.pair, augment=True)
+    val_ds   = wt.MTFForexDatasetV2(val_data,   config, pair=args.pair, augment=False)
+    train_loader = tud.DataLoader(
+        train_ds, batch_size=config.batch_size,
+        shuffle=True, collate_fn=wt.mtf_collate_fn,
+    )
+    val_loader = tud.DataLoader(
+        val_ds, batch_size=config.batch_size,
+        collate_fn=wt.mtf_collate_fn,
+    )
+    history = wt.train_mtf_model_v2(
+        model, train_loader, val_loader, config, device, checkpoint=ckpt
+    )
+    print(f"\nBest directional F1: {max(history.get('dir_f1', [0])):.4f}")
 
     if os.path.exists(ckpt):
         model.load_state_dict(torch.load(ckpt, weights_only=True))
@@ -573,6 +612,8 @@ def main() -> None:
         run_preprocess(args)
     elif args.mode == "mtf":
         run_mtf(args, device)
+    elif args.mode == "mtf_v2":
+        run_mtf_v2(args, device)
     elif args.mode == "live":
         run_live(args, device)
     elif args.mode == "add-user":

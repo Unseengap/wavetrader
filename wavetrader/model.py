@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from .config import MTFConfig, SignalConfig
+from .config import MTFConfig, SignalConfig, DEFAULT_RISK_SCALING
 from .encoders import (
     CausalWaveChainer,
     PriceWaveEncoder,
@@ -242,13 +242,14 @@ class FluxSignal(nn.Module):
             signal_idx = out["signal_logits"].argmax(-1).item()
             confidence = out["confidence"].item()
             risk       = out["risk_params"][0]
+            _rs = DEFAULT_RISK_SCALING
             return TradeSignal(
                 signal=Signal(signal_idx),
                 confidence=confidence,
                 entry_price=0.0,
-                stop_loss=float(risk[0].item() * 50 + 10),
-                take_profit=float(risk[1].item() * 100 + 20),
-                trailing_stop_pct=float(risk[2].item() * 0.5),
+                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                take_profit=_rs.tp_pips(float(risk[1].item())),
+                trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
                 timestamp=datetime.now(),
             )
 
@@ -469,13 +470,258 @@ class WaveTraderMTF(nn.Module):
             confidence = base_conf * (0.5 + 0.5 * alignment)
 
             risk = out["risk_params"][0]
+            _rs = DEFAULT_RISK_SCALING
             return TradeSignal(
                 signal=Signal(signal_idx),
                 confidence=confidence,
                 entry_price=0.0,
-                stop_loss=float(risk[0].item() * 50 + 10),
-                take_profit=float(risk[1].item() * 100 + 20),
-                trailing_stop_pct=float(risk[2].item() * 0.5),
+                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                take_profit=_rs.tp_pips(float(risk[1].item())),
+                trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
+                timestamp=datetime.now(),
+            )
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-timeframe model v2: WaveTraderMTFv2
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TimeframeEncoderV2(nn.Module):
+    """
+    v2 TimeframeEncoder: can return either the last-position summary [B, dim]
+    or the full temporal sequence [B, T, dim] (for CWC temporal processing).
+    """
+
+    def __init__(self, wave_dim: int = 256, dropout: float = 0.1) -> None:
+        super().__init__()
+        self.wave_dim = wave_dim
+
+        self.price_conv = nn.Sequential(
+            CausalConv1d(5, 64, 3),
+            nn.GELU(),
+            CausalConv1d(64, 128, 3),
+            nn.GELU(),
+            CausalConv1d(128, wave_dim // 2, 3),
+        )
+        self.structure_enc = nn.Sequential(
+            nn.Linear(8, 64), nn.GELU(), nn.Linear(64, wave_dim // 4)
+        )
+        self.rsi_enc = nn.Sequential(
+            nn.Linear(3, 32), nn.GELU(), nn.Linear(32, wave_dim // 8)
+        )
+        self.volume_enc = nn.Sequential(
+            nn.Linear(3, 32), nn.GELU(), nn.Linear(32, wave_dim // 8)
+        )
+
+        combined_dim = wave_dim // 2 + wave_dim // 4 + wave_dim // 8 + wave_dim // 8
+        self.fusion = nn.Sequential(
+            nn.Linear(combined_dim, wave_dim),
+            nn.LayerNorm(wave_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+        self.temporal_attn = nn.MultiheadAttention(
+            wave_dim, num_heads=4, batch_first=True, dropout=dropout
+        )
+        self.norm = nn.LayerNorm(wave_dim)
+
+    def forward(
+        self,
+        ohlcv:     Tensor,
+        structure: Tensor,
+        rsi:       Tensor,
+        volume:    Tensor,
+        return_sequence: bool = False,
+    ) -> Tensor:
+        """
+        All inputs [B, T, features]
+        Returns [B, wave_dim] if return_sequence=False (default)
+        Returns [B, T, wave_dim] if return_sequence=True (for CWC)
+        """
+        price_wave     = self.price_conv(ohlcv.transpose(1, 2)).transpose(1, 2)
+        structure_wave = self.structure_enc(structure)
+        rsi_wave       = self.rsi_enc(rsi)
+        volume_wave    = self.volume_enc(volume)
+
+        combined = torch.cat([price_wave, structure_wave, rsi_wave, volume_wave], dim=-1)
+        fused    = self.fusion(combined)
+
+        mask = create_causal_mask(fused.size(1), fused.device)
+        attn_out, _ = self.temporal_attn(fused, fused, fused, attn_mask=mask)
+        fused = self.norm(fused + attn_out)
+
+        if return_sequence:
+            return fused            # [B, T, wave_dim]
+        return fused[:, -1, :]      # [B, wave_dim]
+
+
+class WaveTraderMTFv2(nn.Module):
+    """
+    WaveTrader Multi-Timeframe v2 — targeting 55-70% win rate.
+
+    Key improvements over v1:
+      1. CWC bottleneck fixed: entry-TF temporal sequence [B, T, 256] goes through
+         CWC (not a squeezed single vector), preserving temporal reasoning.
+      2. RegimeGatedLayer (FiLM): conditions fused wave on regime features
+         (ATR + ADX + session + day-of-week).
+      3. Compatible with v2 dataset: extra features, ATR-adaptive labels.
+
+    Architecture:
+      Entry TF encoder (full sequence) → CWC → last position
+      Higher TF encoders (summaries) → concat with entry CWC output
+      → MultiTimeframeFusion → RegimeGatedLayer (FiLM) → WavePredictor → SignalHead
+    """
+
+    def __init__(self, config=None) -> None:
+        super().__init__()
+        from .config import MTFv2Config
+        self.config = config or MTFv2Config()
+        cfg = self.config
+
+        # Per-TF encoders (v2 encoder supports return_sequence)
+        self.tf_encoders = nn.ModuleDict({
+            tf: TimeframeEncoderV2(cfg.tf_wave_dim, cfg.dropout)
+            for tf in cfg.timeframes
+        })
+
+        # CWC for entry-TF temporal sequence
+        self.entry_cwc = CausalWaveChainer(
+            wave_dim=cfg.tf_wave_dim,
+            causal_dim=176,
+            dropout=cfg.dropout,
+        )
+        entry_cwc_dim = cfg.tf_wave_dim + 176  # 256 + 176 = 432
+
+        # Fusion: entry CWC output + higher-TF summaries via cross-attention
+        self.mtf_fusion = MultiTimeframeFusion(
+            tf_wave_dim=cfg.tf_wave_dim,
+            output_dim=cfg.fused_wave_dim,
+            n_timeframes=len(cfg.timeframes),
+            dropout=cfg.dropout,
+        )
+
+        # Project entry CWC output to match fusion output for concat
+        self.entry_proj = nn.Sequential(
+            nn.Linear(entry_cwc_dim, cfg.fused_wave_dim),
+            nn.LayerNorm(cfg.fused_wave_dim),
+            nn.GELU(),
+        )
+
+        # Merge entry CWC stream + fusion stream
+        self.stream_merge = nn.Sequential(
+            nn.Linear(cfg.fused_wave_dim * 2, cfg.fused_wave_dim),
+            nn.LayerNorm(cfg.fused_wave_dim),
+            nn.GELU(),
+            nn.Dropout(cfg.dropout),
+        )
+
+        # FiLM regime gating (conditions on ATR + ADX + session + DOW)
+        regime_dim = getattr(cfg, 'regime_dim', 7)
+        self.use_regime_gating = getattr(cfg, 'use_regime_gating', True)
+        if self.use_regime_gating:
+            self.regime_gate = RegimeGatedLayer(cfg.fused_wave_dim, n_features=regime_dim)
+
+        # Main CWC + predictor stack
+        self.cwc = CausalWaveChainer(
+            wave_dim=cfg.fused_wave_dim,
+            causal_dim=176,
+            dropout=cfg.dropout,
+        )
+
+        _pred_cfg = SignalConfig(
+            fused_wave_dim=cfg.fused_wave_dim,
+            causal_dim=176,
+            predictor_hidden=cfg.predictor_hidden,
+            predictor_heads=cfg.predictor_heads,
+            predictor_layers=cfg.predictor_layers,
+            predictor_ff_dim=cfg.predictor_ff_dim,
+            dropout=cfg.dropout,
+        )
+        self.predictor   = WavePredictor(_pred_cfg)
+        self.signal_head = SignalHead(cfg.output_wave_dim, cfg.dropout)
+
+        self.last_alignment: Optional[Tensor] = None
+
+    def forward(self, batch: Dict[str, Dict[str, Tensor]]) -> Dict[str, Tensor]:
+        """
+        batch: {tf: {ohlcv, structure, rsi, volume, regime(optional)}, ...}
+        """
+        entry_tf = self.config.entry_timeframe
+
+        # 1. Entry-TF: get FULL temporal sequence, run through CWC
+        entry_data = batch[entry_tf]
+        entry_seq = self.tf_encoders[entry_tf](
+            entry_data["ohlcv"],
+            entry_data["structure"],
+            entry_data["rsi"],
+            entry_data["volume"],
+            return_sequence=True,  # [B, T, tf_wave_dim]
+        )
+        entry_causal = self.entry_cwc(entry_seq)  # [B, T, tf_wave_dim + 176]
+        entry_vec = entry_causal[:, -1, :]         # [B, entry_cwc_dim]
+        entry_proj = self.entry_proj(entry_vec)    # [B, fused_wave_dim]
+
+        # 2. All TFs: get summary vectors (last position) for fusion
+        tf_waves = []
+        for tf in self.config.timeframes:
+            if tf == entry_tf:
+                # Use last position from the sequence we already computed
+                tf_waves.append(entry_seq[:, -1, :])
+            else:
+                tf_waves.append(
+                    self.tf_encoders[tf](
+                        batch[tf]["ohlcv"],
+                        batch[tf]["structure"],
+                        batch[tf]["rsi"],
+                        batch[tf]["volume"],
+                        return_sequence=False,
+                    )
+                )
+
+        # 3. Multi-TF fusion
+        fused, alignment   = self.mtf_fusion(tf_waves)
+        self.last_alignment = alignment
+
+        # 4. Merge entry CWC stream + fusion stream
+        merged = self.stream_merge(torch.cat([entry_proj, fused], dim=-1))
+
+        # 5. FiLM regime gating
+        if self.use_regime_gating and "regime" in batch.get(entry_tf, {}):
+            regime = batch[entry_tf]["regime"]
+            if regime.dim() == 3:
+                regime = regime[:, -1, :]  # [B, regime_dim]
+            merged = self.regime_gate(merged, regime)
+
+        # 6. Main CWC + predictor + signal head
+        merged = merged.unsqueeze(1)        # [B, 1, fused_dim]
+        causal = self.cwc(merged)
+        output = self.signal_head(self.predictor(causal).squeeze(1))
+        output["alignment"] = alignment
+        return output
+
+    def predict(self, batch: Dict[str, Dict[str, Tensor]]) -> TradeSignal:
+        """Single-sample inference → TradeSignal."""
+        self.eval()
+        with torch.no_grad():
+            out        = self.forward(batch)
+            signal_idx = out["signal_logits"].argmax(-1).item()
+            base_conf  = out["confidence"].item()
+            alignment  = out["alignment"].item()
+            confidence = base_conf * (0.5 + 0.5 * alignment)
+
+            risk = out["risk_params"][0]
+            _rs = DEFAULT_RISK_SCALING
+            return TradeSignal(
+                signal=Signal(signal_idx),
+                confidence=confidence,
+                entry_price=0.0,
+                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                take_profit=_rs.tp_pips(float(risk[1].item())),
+                trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
                 timestamp=datetime.now(),
             )
 
@@ -685,13 +931,14 @@ class FluxSignalFabric(nn.Module):
             signal_idx = out["signal_logits"].argmax(-1).item()
             confidence = out["confidence"].item()
             risk       = out["risk_params"][0]
+            _rs = DEFAULT_RISK_SCALING
             return TradeSignal(
                 signal=Signal(signal_idx),
                 confidence=confidence,
                 entry_price=0.0,
-                stop_loss=float(risk[0].item() * 50 + 10),
-                take_profit=float(risk[1].item() * 100 + 20),
-                trailing_stop_pct=float(risk[2].item() * 0.5),
+                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                take_profit=_rs.tp_pips(float(risk[1].item())),
+                trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
                 timestamp=datetime.now(),
             )
 

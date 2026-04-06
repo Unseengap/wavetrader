@@ -30,7 +30,7 @@ import pandas as pd
 import torch
 from torch import Tensor
 
-from .config import BacktestConfig, MTFConfig, ResonanceConfig
+from .config import BacktestConfig, MTFConfig, ResonanceConfig, DEFAULT_RISK_SCALING
 from .dataset import ResonanceBuffer, prepare_features
 from .model import WaveTraderMTF
 from .monitor import Monitor, MonitorConfig
@@ -506,9 +506,10 @@ class StreamingEngine:
             risk = out["risk_params"][0]
             pip = _PIP_SIZE.get(self.pair, 0.01)
 
-            sl_pips = float(risk[0].item() * 50 + 10)
-            tp_pips = float(risk[1].item() * 100 + 20)
-            trailing = float(risk[2].item() * 0.5)
+            _rs = DEFAULT_RISK_SCALING
+            sl_pips = _rs.sl_pips(float(risk[0].item()))
+            tp_pips = _rs.tp_pips(float(risk[1].item()))
+            trailing = _rs.trailing_pct(float(risk[2].item()))
 
             sig = Signal(signal_idx)
             if sig == Signal.BUY:

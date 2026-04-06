@@ -28,7 +28,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from .config import MTFConfig, SignalConfig
-from .indicators import calculate_atr, calculate_rsi, classify_structure, session_features
+from .indicators import calculate_atr, calculate_adx, calculate_rsi, classify_structure, session_features
 from .types import Signal
 
 _DEFAULT_SINGLE_CONFIG = SignalConfig()
@@ -134,6 +134,65 @@ def _get_label(row: pd.Series, threshold_pips: float, pair: str) -> int:
     if max_down >= threshold and max_down > max_up:
         return Signal.SELL.value
     return Signal.HOLD.value
+
+
+def _get_label_v2(row: pd.Series, atr_k: float, pair: str) -> int:
+    """
+    ATR-adaptive label generation.
+    Threshold = atr_k × ATR(14) instead of fixed pip count.
+    This makes labels volatility-aware: tighter thresholds in calm markets,
+    wider thresholds in volatile markets.
+    """
+    entry     = row["close"]
+    atr_val   = row.get("atr_raw", 0.0)
+    if atr_val <= 0 or np.isnan(atr_val):
+        # Fallback to a fixed 20-pip threshold when ATR unavailable
+        threshold = 20.0 * _pip_size(pair)
+    else:
+        threshold = atr_k * atr_val
+
+    max_up   = row["future_high"] - entry
+    max_down = entry - row["future_low"]
+
+    if max_up >= threshold and max_up > max_down:
+        return Signal.BUY.value
+    if max_down >= threshold and max_down > max_up:
+        return Signal.SELL.value
+    return Signal.HOLD.value
+
+
+def prepare_features_v2(
+    df:             pd.DataFrame,
+    lookahead:      int  = 10,
+    pair:           str  = "GBP/JPY",
+    extra_features: list = None,
+) -> pd.DataFrame:
+    """
+    Extended feature preparation for v2 models.
+    Adds ADX, day-of-week cyclical, and raw ATR on top of v1 features.
+    """
+    df = prepare_features(df, lookahead=lookahead, pair=pair)
+    extra_features = extra_features or []
+
+    # ── Raw ATR (needed for ATR-adaptive labels and ATR-relative SL/TP) ───
+    atr_raw = calculate_atr(df["high"].values, df["low"].values, df["close"].values)
+    df["atr_raw"] = pd.Series(atr_raw).fillna(method="bfill").fillna(0.0).values
+
+    # ── ADX (trend strength, 0-100) ───────────────────────────────────────
+    if "adx" in extra_features:
+        adx = calculate_adx(df["high"].values, df["low"].values, df["close"].values)
+        df["adx_norm"] = pd.Series(adx).fillna(20.0).values / 100.0
+
+    # ── Day-of-week cyclical encoding ─────────────────────────────────────
+    if "dow" in extra_features and "date" in df.columns:
+        dow = pd.to_datetime(df["date"]).dt.dayofweek  # 0=Monday..4=Friday
+        df["dow_sin"] = np.sin(2 * np.pi * dow / 5.0)
+        df["dow_cos"] = np.cos(2 * np.pi * dow / 5.0)
+    elif "dow" in extra_features:
+        df["dow_sin"] = 0.0
+        df["dow_cos"] = 0.0
+
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -327,6 +386,164 @@ def mtf_collate_fn(batch: List[Dict]) -> Dict:
     }
     result["label"] = torch.stack([b["label"] for b in batch])
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-timeframe v2 dataset — ATR-adaptive labels, regime, augmentation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MTFForexDatasetV2(Dataset):
+    """
+    Multi-timeframe dataset for WaveTraderMTFv2 training.
+
+    Differences from MTFForexDataset:
+      - Uses ATR-adaptive labels (_get_label_v2) instead of fixed-pip threshold
+      - Includes 'regime' tensor per timeframe (for FiLM conditioning)
+      - Supports data augmentation (noise injection, modality dropout)
+      - Computes v2 features (ADX, day-of-week, raw ATR)
+    """
+
+    _TF_RATIOS: Dict[str, int] = {
+        "1min": 1, "5min": 5, "15min": 15, "30min": 30,
+        "1h": 60,  "4h": 240, "1d": 1440,
+    }
+
+    def __init__(
+        self,
+        dataframes:      Dict[str, pd.DataFrame],
+        config,  # MTFv2Config
+        lookahead:       int   = 10,
+        pair:            str   = "GBP/JPY",
+        augment:         bool  = False,
+    ) -> None:
+        self.config    = config
+        self.lookahead = lookahead
+        self.pair      = pair
+        self.augment   = augment
+        self._aug_noise_prob = getattr(config, 'augment_noise_prob', 0.3)
+        self._aug_drop_prob  = getattr(config, 'augment_dropout_prob', 0.1)
+
+        extra = getattr(config, 'extra_features', [])
+        atr_k = getattr(config, 'label_atr_k', 1.5)
+        self._atr_k = atr_k
+
+        self.prepared: Dict[str, pd.DataFrame] = {
+            tf: prepare_features_v2(df.copy(), lookahead=lookahead, pair=pair, extra_features=extra)
+            for tf, df in dataframes.items()
+        }
+
+        entry_tf      = self.config.entry_timeframe
+        entry_df      = self.prepared[entry_tf]
+        lookback      = self.config.lookbacks[entry_tf]
+        self.valid_indices = list(range(lookback, len(entry_df) - lookahead))
+        self.entry_tf = entry_tf
+
+        # Determine regime columns
+        base_regime = ["session_tokyo", "session_london", "session_newyork", "atr_pct"]
+        self._regime_cols = list(base_regime)
+        if "adx" in extra:
+            self._regime_cols.append("adx_norm")
+        if "dow" in extra:
+            self._regime_cols.extend(["dow_sin", "dow_cos"])
+
+    def _get_tf_slice(self, tf: str, entry_idx: int) -> pd.DataFrame:
+        entry_df = self.prepared[self.entry_tf]
+        tf_df    = self.prepared[tf]
+        lookback = self.config.lookbacks[tf]
+
+        if tf == self.entry_tf:
+            start = max(0, entry_idx - lookback)
+            return tf_df.iloc[start:entry_idx]
+
+        if "date" in entry_df.columns and "date" in tf_df.columns:
+            entry_time = entry_df.iloc[entry_idx]["date"]
+            mask       = tf_df["date"] <= entry_time
+            tf_idx     = int(mask.sum()) - 1 if mask.any() else 0
+        else:
+            entry_mins = self._TF_RATIOS.get(self.entry_tf, 15)
+            tf_mins    = self._TF_RATIOS.get(tf, 60)
+            tf_idx     = min(int(entry_idx * entry_mins / tf_mins), len(tf_df) - 1)
+
+        start = max(0, tf_idx - lookback)
+        return tf_df.iloc[start : tf_idx + 1]
+
+    def _to_tensors(self, sl: pd.DataFrame, lookback: int) -> Dict[str, Tensor]:
+        if len(sl) < lookback:
+            pad = pd.concat([sl.iloc[:1]] * (lookback - len(sl)) + [sl])
+        else:
+            pad = sl
+        pad = pad.iloc[-lookback:]
+
+        tensors = {
+            "ohlcv": torch.tensor(
+                pad[["open_norm", "high_norm", "low_norm", "close_norm", "volume_norm"]].values,
+                dtype=torch.float32,
+            ),
+            "structure": torch.tensor(
+                pad[[f"structure_{i}" for i in range(8)]].values,
+                dtype=torch.float32,
+            ),
+            "rsi": torch.tensor(
+                pad[["rsi_norm", "rsi_delta_norm", "rsi_accel_norm"]].values,
+                dtype=torch.float32,
+            ),
+            "volume": torch.tensor(
+                pad[["volume_norm", "volume_ratio", "volume_delta"]].values,
+                dtype=torch.float32,
+            ),
+        }
+
+        # Regime tensor (v2 includes ADX + day-of-week)
+        regime_cols = [c for c in self._regime_cols if c in pad.columns]
+        if regime_cols:
+            tensors["regime"] = torch.tensor(
+                pad[regime_cols].values, dtype=torch.float32,
+            )
+        else:
+            tensors["regime"] = torch.zeros(lookback, 4, dtype=torch.float32)
+
+        return tensors
+
+    def _apply_augmentation(self, tensors: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """Apply training-time data augmentation."""
+        if not self.augment:
+            return tensors
+
+        # Gaussian noise on OHLC
+        if torch.rand(1).item() < self._aug_noise_prob:
+            noise = torch.randn_like(tensors["ohlcv"]) * 0.01
+            tensors["ohlcv"] = tensors["ohlcv"] + noise
+
+        # Random modality dropout (zero out one modality)
+        if torch.rand(1).item() < self._aug_drop_prob:
+            modality = torch.randint(0, 4, (1,)).item()
+            keys = ["ohlcv", "structure", "rsi", "volume"]
+            tensors[keys[modality]] = torch.zeros_like(tensors[keys[modality]])
+
+        return tensors
+
+    def __len__(self) -> int:
+        return len(self.valid_indices)
+
+    def __getitem__(self, idx: int) -> Dict[str, Dict[str, Tensor]]:
+        actual  = self.valid_indices[idx]
+        result: Dict = {}
+
+        for tf in self.config.timeframes:
+            sl       = self._get_tf_slice(tf, actual)
+            lookback = self.config.lookbacks[tf]
+            tensors  = self._to_tensors(sl, lookback)
+            if tf == self.entry_tf:
+                tensors = self._apply_augmentation(tensors)
+            result[tf] = tensors
+
+        label = _get_label_v2(
+            self.prepared[self.entry_tf].iloc[actual],
+            self._atr_k,
+            self.pair,
+        )
+        result["label"] = torch.tensor(label, dtype=torch.long)
+        return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

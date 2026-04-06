@@ -409,3 +409,260 @@ class SynapticIntelligence:
                     self.omega[n].to(device) * (p - self.theta_star[n].to(device)).pow(2)
                 ).sum()
         return self.si_lambda * loss
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v2 Training: Focal Loss, per-class metrics, early stopping on BUY/SELL F1
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss (Lin et al., 2017): down-weights easy examples, focuses on hard ones.
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    With gamma=2.0, correctly classified samples with p > 0.6 contribute < 10%
+    of their original loss, forcing the model to focus on uncertain predictions.
+    """
+
+    def __init__(
+        self,
+        alpha:   Optional[List[float]] = None,
+        gamma:   float = 2.0,
+        weight:  Optional[Tensor] = None,
+    ) -> None:
+        super().__init__()
+        self.gamma = gamma
+        if alpha is not None:
+            self.register_buffer("alpha", torch.tensor(alpha, dtype=torch.float32))
+        else:
+            self.alpha = None
+        if weight is not None:
+            self.register_buffer("class_weight", weight)
+        else:
+            self.class_weight = None
+
+    def forward(self, logits: Tensor, targets: Tensor) -> Tensor:
+        """
+        logits:  [B, C] raw logits
+        targets: [B] class indices
+        """
+        probs = F.softmax(logits, dim=-1)
+        targets_one_hot = F.one_hot(targets, num_classes=logits.size(-1)).float()
+        pt = (probs * targets_one_hot).sum(-1)   # [B]
+        focal_weight = (1.0 - pt) ** self.gamma
+
+        log_probs = F.log_softmax(logits, dim=-1)
+        ce = -(targets_one_hot * log_probs).sum(-1)  # [B]
+
+        loss = focal_weight * ce
+
+        if self.alpha is not None:
+            alpha_t = self.alpha.to(logits.device)[targets]
+            loss = alpha_t * loss
+
+        return loss.mean()
+
+
+class SignalLossV2(nn.Module):
+    """
+    v2 loss function:
+      • Focal Loss for BUY/SELL/HOLD classification
+      • MSE confidence calibration (same as v1)
+    """
+
+    def __init__(
+        self,
+        use_focal: bool = True,
+        focal_gamma: float = 2.0,
+        focal_alpha: Optional[List[float]] = None,
+    ) -> None:
+        super().__init__()
+        self.use_focal = use_focal
+        if use_focal:
+            alpha = focal_alpha or [1.0, 1.0, 0.3]
+            self.signal_loss = FocalLoss(alpha=alpha, gamma=focal_gamma)
+        else:
+            self.signal_loss = nn.CrossEntropyLoss(
+                weight=torch.tensor(focal_alpha or [1.0, 1.0, 0.3])
+            )
+
+    def forward(
+        self, output: Dict[str, Tensor], labels: Tensor
+    ) -> Dict[str, Tensor]:
+        signal_loss = self.signal_loss(output["signal_logits"], labels)
+
+        probs      = F.softmax(output["signal_logits"], dim=-1)
+        correct    = (probs.argmax(-1) == labels).float()
+        conf       = output["confidence"].squeeze(-1)
+        conf_loss  = F.mse_loss(conf, correct)
+
+        total = signal_loss + 0.1 * conf_loss
+        return {"total": total, "signal_loss": signal_loss, "conf_loss": conf_loss}
+
+
+def _compute_per_class_metrics(
+    all_preds: List[int], all_labels: List[int], n_classes: int = 3
+) -> Dict[str, Dict[str, float]]:
+    """Compute precision, recall, F1 per class. Returns {cls: {prec, rec, f1}}."""
+    import numpy as np
+    preds  = np.array(all_preds)
+    labels = np.array(all_labels)
+    metrics = {}
+    for c in range(n_classes):
+        tp = int(((preds == c) & (labels == c)).sum())
+        fp = int(((preds == c) & (labels != c)).sum())
+        fn = int(((preds != c) & (labels == c)).sum())
+        prec = tp / max(tp + fp, 1)
+        rec  = tp / max(tp + fn, 1)
+        f1   = 2 * prec * rec / max(prec + rec, 1e-9)
+        class_name = ["BUY", "SELL", "HOLD"][c]
+        metrics[class_name] = {"precision": prec, "recall": rec, "f1": f1}
+    return metrics
+
+
+def _directional_f1(metrics: Dict[str, Dict[str, float]]) -> float:
+    """Weighted F1 of BUY + SELL only (ignoring HOLD)."""
+    buy_f1  = metrics.get("BUY", {}).get("f1", 0.0)
+    sell_f1 = metrics.get("SELL", {}).get("f1", 0.0)
+    return (buy_f1 + sell_f1) / 2.0
+
+
+class WarmupCosineScheduler(torch.optim.lr_scheduler._LRScheduler):
+    """Linear warmup for `warmup_epochs`, then cosine annealing."""
+
+    def __init__(self, optimizer, warmup_epochs: int, total_epochs: int, last_epoch: int = -1):
+        self.warmup_epochs = warmup_epochs
+        self.total_epochs  = total_epochs
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        import math
+        if self.last_epoch < self.warmup_epochs:
+            factor = (self.last_epoch + 1) / max(self.warmup_epochs, 1)
+            return [base_lr * factor for base_lr in self.base_lrs]
+        progress = (self.last_epoch - self.warmup_epochs) / max(self.total_epochs - self.warmup_epochs, 1)
+        factor = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return [base_lr * factor for base_lr in self.base_lrs]
+
+
+def train_mtf_model_v2(
+    model:        nn.Module,
+    train_loader: DataLoader,
+    val_loader:   DataLoader,
+    config,       # MTFv2Config
+    device:       torch.device,
+    checkpoint:   str = "wavetrader_mtf_v2_best.pt",
+) -> Dict[str, List]:
+    """
+    Train WaveTraderMTFv2 with:
+      - Focal Loss (or weighted CE)
+      - LR warmup + cosine annealing
+      - Early stopping on BUY/SELL directional F1
+      - Per-class precision/recall/F1 logging every epoch
+    """
+    model     = model.to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config.learning_rate, weight_decay=0.01
+    )
+
+    warmup = getattr(config, 'warmup_epochs', 5)
+    scheduler = WarmupCosineScheduler(optimizer, warmup, config.epochs)
+
+    use_focal = getattr(config, 'use_focal_loss', True)
+    gamma     = getattr(config, 'focal_gamma', 2.0)
+    alpha     = getattr(config, 'focal_alpha', [1.0, 1.0, 0.3])
+    criterion = SignalLossV2(use_focal=use_focal, focal_gamma=gamma, focal_alpha=alpha).to(device)
+
+    patience    = getattr(config, 'early_stopping_patience', 10)
+    best_f1     = 0.0
+    epochs_no_improve = 0
+
+    history: Dict[str, List] = {
+        "train_loss": [], "val_loss": [], "val_accuracy": [],
+        "val_f1_directional": [], "per_class_metrics": [],
+    }
+
+    print(f"\nTraining WaveTraderMTFv2  ({_count(model):,} parameters)")
+    print(f"Timeframes : {config.timeframes}")
+    print(f"Focal Loss : {'ON' if use_focal else 'OFF'} (gamma={gamma})")
+    print(f"Early Stop : patience={patience} on directional F1")
+    print(f"LR Warmup  : {warmup} epochs → cosine annealing")
+    print(f"Device     : {device}")
+    print("-" * 70)
+
+    for epoch in range(config.epochs):
+        train_loss = _train_epoch_mtf(model, train_loader, optimizer, criterion, device, config)
+        val_loss, val_acc, per_class = _val_epoch_mtf_v2(model, val_loader, criterion, device, config)
+        scheduler.step()
+
+        dir_f1 = _directional_f1(per_class)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["val_accuracy"].append(val_acc)
+        history["val_f1_directional"].append(dir_f1)
+        history["per_class_metrics"].append(per_class)
+
+        # Early stopping on directional F1
+        if dir_f1 > best_f1:
+            best_f1 = dir_f1
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), checkpoint)
+        else:
+            epochs_no_improve += 1
+
+        lr = optimizer.param_groups[0]["lr"]
+        buy_f1  = per_class.get("BUY", {}).get("f1", 0.0)
+        sell_f1 = per_class.get("SELL", {}).get("f1", 0.0)
+        hold_f1 = per_class.get("HOLD", {}).get("f1", 0.0)
+
+        print(
+            f"Epoch {epoch+1:3d}/{config.epochs}  "
+            f"train={train_loss:.4f}  val={val_loss:.4f}  acc={val_acc:.2%}  "
+            f"F1[B/S/H]={buy_f1:.2f}/{sell_f1:.2f}/{hold_f1:.2f}  "
+            f"dir_f1={dir_f1:.3f}  lr={lr:.1e}"
+        )
+
+        if epochs_no_improve >= patience:
+            print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+            break
+
+    # Restore best checkpoint
+    if os.path.exists(checkpoint):
+        model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+
+    print("-" * 70)
+    print(f"Best directional F1: {best_f1:.3f}")
+    return history
+
+
+def _val_epoch_mtf_v2(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    config,
+) -> Tuple[float, float, Dict]:
+    """Validation with per-class metrics."""
+    model.eval()
+    total, correct, n = 0.0, 0, 0
+    all_preds, all_labels = [], []
+
+    with torch.no_grad():
+        for batch in loader:
+            labels = batch["label"].to(device)
+            model_input = {
+                tf: {k: v.to(device) for k, v in batch[tf].items()}
+                for tf in config.timeframes
+            }
+            out    = model(model_input)
+            total += criterion(out, labels)["total"].item()
+            preds  = out["signal_logits"].argmax(-1)
+            correct += (preds == labels).sum().item()
+            n       += labels.size(0)
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
+
+    val_loss = total / max(len(loader), 1)
+    val_acc  = correct / max(n, 1)
+    per_class = _compute_per_class_metrics(all_preds, all_labels)
+    return val_loss, val_acc, per_class

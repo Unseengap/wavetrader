@@ -2,7 +2,7 @@
 Configuration classes for WaveTrader.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -121,3 +121,119 @@ class SIConfig:
     si_lambda: float = 0.1             # Importance penalty weight (gentle for streaming FX)
     epsilon: float = 1e-3              # Denominator stability term
     consolidate_every: int = 500       # Batches between consolidation checkpoints
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Unified risk scaling — single source of truth for SL/TP/trailing conversion
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class RiskScaling:
+    """
+    Maps raw model risk_params (Softplus output, ~0-1+ range) to pip values.
+    Used by model.predict(), backtest.run_backtest(), and streaming.py.
+    """
+    sl_mult:    float = 50.0    # SL pips = risk[0] * sl_mult + sl_floor
+    sl_floor:   float = 10.0
+    tp_mult:    float = 100.0   # TP pips = risk[1] * tp_mult + tp_floor
+    tp_floor:   float = 20.0
+    trail_mult: float = 0.5     # trailing % = risk[2] * trail_mult
+
+    def sl_pips(self, raw: float) -> float:
+        return raw * self.sl_mult + self.sl_floor
+
+    def tp_pips(self, raw: float) -> float:
+        return raw * self.tp_mult + self.tp_floor
+
+    def trailing_pct(self, raw: float) -> float:
+        return raw * self.trail_mult
+
+
+# Default risk scaling — matches model.py predict() (was mismatched in backtest.py)
+DEFAULT_RISK_SCALING = RiskScaling()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MTF v2 Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class MTFv2Config:
+    """
+    Configuration for WaveTraderMTFv2 — improved MTF model targeting 55-70% win rate.
+    
+    Key differences from MTFConfig:
+      - ATR-adaptive labels (threshold = atr_k × ATR instead of fixed pips)
+      - Extra features: ADX, day-of-week cyclical encoding
+      - Regime gating via FiLM conditioning
+      - Focal loss for training
+      - Early stopping on BUY/SELL F1
+      - ADX trend filter for trade execution
+    """
+    # Timeframes (same as v1)
+    timeframes: List[str] = field(
+        default_factory=lambda: ["15min", "1h", "4h", "1d"]
+    )
+    lookbacks: Dict[str, int] = field(
+        default_factory=lambda: {
+            "15min": 100,
+            "1h":    100,
+            "4h":    100,
+            "1d":    50,
+        }
+    )
+
+    # Wave dimensions
+    tf_wave_dim: int = 256
+    fused_wave_dim: int = 512
+
+    # Model architecture
+    predictor_hidden: int = 512
+    predictor_heads: int = 8
+    predictor_layers: int = 4
+    predictor_ff_dim: int = 2048
+
+    # Training
+    dropout: float = 0.2
+    learning_rate: float = 1e-4
+    batch_size: int = 16
+    epochs: int = 100
+    warmup_epochs: int = 5
+
+    # Trading
+    pair: str = "GBP/JPY"
+    entry_timeframe: str = "15min"
+
+    # ── v2 Label generation ───────────────────────────────────────────────
+    label_atr_k: float = 1.5           # Label threshold = atr_k × ATR(14)
+    label_lookahead: int = 10           # Bars ahead for label computation
+
+    # ── v2 Extra features ─────────────────────────────────────────────────
+    extra_features: List[str] = field(
+        default_factory=lambda: ["adx", "dow"]  # ADX + day-of-week
+    )
+    regime_dim: int = 7                 # 4 base (session+atr_pct) + 1 ADX + 2 DOW
+
+    # ── v2 Architecture flags ─────────────────────────────────────────────
+    use_regime_gating: bool = True      # FiLM conditioning after fusion
+    use_temporal_cwc: bool = True       # Pass entry-TF sequence through CWC (fix bottleneck)
+
+    # ── v2 Training flags ─────────────────────────────────────────────────
+    use_focal_loss: bool = True
+    focal_gamma: float = 2.0
+    focal_alpha: List[float] = field(
+        default_factory=lambda: [1.0, 1.0, 0.3]
+    )
+    early_stopping_patience: int = 10   # On BUY/SELL weighted F1
+    use_augmentation: bool = True
+    augment_noise_prob: float = 0.3     # Probability of adding Gaussian noise
+    augment_dropout_prob: float = 0.1   # Probability of zeroing a modality
+
+    # ── v2 Backtest / execution ───────────────────────────────────────────
+    adx_filter_threshold: float = 20.0  # Skip trades when ADX < this
+    max_hold_bars: int = 50             # Close trade after this many bars
+    risk_scaling: str = "fixed"         # "fixed" (default scaling) or "atr"
+
+    @property
+    def output_wave_dim(self) -> int:
+        return self.fused_wave_dim + 176  # fused + causal dim

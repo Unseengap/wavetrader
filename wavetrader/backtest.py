@@ -16,7 +16,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from .config import BacktestConfig, SignalConfig
+from .config import BacktestConfig, SignalConfig, DEFAULT_RISK_SCALING
 from .dataset import ForexDataset
 from .types import BacktestResults, Signal, Trade, TradeSignal
 
@@ -41,10 +41,16 @@ class BacktestEngine:
         `atr_halt_multiplier` times the 20-bar rolling mean range.
       - Drawdown step-down: halve risk_per_trade when live drawdown exceeds
         `drawdown_reduce_threshold`.
+
+    v2 features (activated by passing v2_config):
+      - ADX trend filter: skip trades when ADX < threshold
+      - Max hold period: close trades after N bars
+      - Confidence-weighted position sizing
     """
 
-    def __init__(self, config: Optional[BacktestConfig] = None) -> None:
+    def __init__(self, config: Optional[BacktestConfig] = None, v2_config=None) -> None:
         self.config      = config or BacktestConfig()
+        self.v2_config   = v2_config  # MTFv2Config or None
         self.balance     = self.config.initial_balance
         self.equity      = self.config.initial_balance
         self.open_trade: Optional[Trade]    = None
@@ -52,8 +58,8 @@ class BacktestEngine:
         self.equity_curve                   = [self.config.initial_balance]
         self.peak_equity                    = self.config.initial_balance
         self.max_drawdown                   = 0.0
-        # Rolling bar ranges for volatility circuit breaker (last 20 bars)
         self._recent_ranges: deque = deque(maxlen=20)
+        self._bars_in_trade: int = 0
 
     # ── Circuit breakers ───────────────────────────────────────────────
 
@@ -76,10 +82,17 @@ class BacktestEngine:
 
     # ── Position sizing ────────────────────────────────────────────────────
 
-    def _lot_size(self, sl_pips: float) -> float:
+    def _lot_size(self, sl_pips: float, confidence: float = 1.0) -> float:
         effective_risk  = self.config.risk_per_trade * self._risk_multiplier()
         risk_amount     = self.balance * effective_risk
         lot             = risk_amount / max(sl_pips * self.config.pip_value, 1e-9)
+
+        # v2: confidence-weighted sizing — marginal signals get smaller positions
+        if self.v2_config is not None and confidence < 1.0:
+            min_conf = self.config.min_confidence
+            conf_scale = max(0.25, (confidence - min_conf) / max(1.0 - min_conf, 1e-9))
+            lot *= conf_scale
+
         lot             = max(0.01, min(5.0, lot))
         margin_required = (lot * 100_000) / self.config.leverage
         if margin_required > self.balance * 0.5:
@@ -95,6 +108,7 @@ class BacktestEngine:
         timestamp:     datetime,
         current_high:  Optional[float] = None,
         current_low:   Optional[float] = None,
+        current_adx:   Optional[float] = None,
     ) -> Optional[Trade]:
         if self.open_trade is not None:
             return None
@@ -109,6 +123,11 @@ class BacktestEngine:
             and self._is_volatility_halted(current_high, current_low)
         ):
             return None
+        # v2: ADX trend filter — skip trades in ranging markets
+        if self.v2_config is not None and current_adx is not None:
+            adx_thresh = getattr(self.v2_config, 'adx_filter_threshold', 20.0)
+            if current_adx < adx_thresh:
+                return None
 
         spread = self.config.spread_pips * 0.01
         pip    = 0.01   # GBP/JPY convention
@@ -122,7 +141,7 @@ class BacktestEngine:
             sl    = entry + signal.stop_loss * pip
             tp    = entry - signal.take_profit * pip
 
-        lot = self._lot_size(signal.stop_loss)
+        lot = self._lot_size(signal.stop_loss, signal.confidence)
         self.balance -= self.config.commission_per_lot * lot
 
         self.open_trade = Trade(
@@ -134,6 +153,7 @@ class BacktestEngine:
             trailing_stop_pct=signal.trailing_stop_pct,
             size=lot,
         )
+        self._bars_in_trade = 0
         return self.open_trade
 
     # ── Update ────────────────────────────────────────────────────────────
@@ -153,13 +173,22 @@ class BacktestEngine:
             return None
 
         t = self.open_trade
+        self._bars_in_trade += 1
+
+        # v2: Max hold period — close at market if trade has been open too long
+        if self.v2_config is not None:
+            max_hold = getattr(self.v2_config, 'max_hold_bars', 50)
+            if self._bars_in_trade >= max_hold:
+                return self.close_position(current_close, timestamp, "Max Hold")
 
         if t.direction == Signal.BUY:
             if current_high > t.highest_price:
                 t.highest_price = current_high
                 if t.trailing_stop_pct > 0:
-                    move   = t.highest_price - t.entry_price
-                    new_sl = t.entry_price + move * t.trailing_stop_pct - (t.entry_price - t.stop_loss)
+                    # v2 trailing: standard ratchet — SL = peak - initial_risk * (1 - trail%)
+                    initial_risk = t.entry_price - t.stop_loss  # original SL distance
+                    trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
+                    new_sl = t.highest_price - trail_distance
                     if new_sl > t.current_sl:
                         t.current_sl = new_sl
 
@@ -172,8 +201,9 @@ class BacktestEngine:
             if current_low < t.lowest_price:
                 t.lowest_price = current_low
                 if t.trailing_stop_pct > 0:
-                    move   = t.entry_price - t.lowest_price
-                    new_sl = t.entry_price - move * t.trailing_stop_pct + (t.stop_loss - t.entry_price)
+                    initial_risk = t.stop_loss - t.entry_price
+                    trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
+                    new_sl = t.lowest_price + trail_distance
                     if new_sl < t.current_sl:
                         t.current_sl = new_sl
 
@@ -277,17 +307,26 @@ def run_backtest(
 ) -> BacktestResults:
     """
     Run a full bar-by-bar backtest on `df` using `model` for signal generation.
-    Supports both single-timeframe and multi-timeframe backtesting.
+    Supports single-TF, MTF v1, and MTF v2 backtesting.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     bt_config = bt_config or BacktestConfig()
-    engine    = BacktestEngine(bt_config)
+
+    # Detect v2 config for enhanced features
+    from .config import MTFv2Config
+    is_v2 = isinstance(config, MTFv2Config)
+    v2_cfg = config if is_v2 else None
+    engine = BacktestEngine(bt_config, v2_config=v2_cfg)
     
     if hasattr(config, 'timeframes'):
-        from .dataset import MTFForexDataset
-        dataset = MTFForexDataset(df, config, lookahead=10, pair=config.pair)
+        if is_v2:
+            from .dataset import MTFForexDatasetV2
+            dataset = MTFForexDatasetV2(df, config, lookahead=10, pair=config.pair, augment=False)
+        else:
+            from .dataset import MTFForexDataset
+            dataset = MTFForexDataset(df, config, lookahead=10, pair=config.pair)
         base_df = dataset.prepared[dataset.entry_tf]
         is_mtf = True
     else:
@@ -345,13 +384,14 @@ def run_backtest(
                 risk     = out["risk_params"][0]
 
                 if sig_idx != Signal.HOLD.value and conf >= bt_config.min_confidence:
+                    _rs = DEFAULT_RISK_SCALING
                     trade_signal = TradeSignal(
                         signal=Signal(sig_idx),
                         confidence=conf,
                         entry_price=current_bar["close"],
-                        stop_loss=float(risk[0].item() * 30 + 15),
-                        take_profit=float(risk[1].item() * 60 + 30),
-                        trailing_stop_pct=float(risk[2].item() * 0.3),
+                        stop_loss=_rs.sl_pips(float(risk[0].item())),
+                        take_profit=_rs.tp_pips(float(risk[1].item())),
+                        trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
                         timestamp=timestamp,
                     )
                     engine.open_position(
@@ -360,6 +400,7 @@ def run_backtest(
                         timestamp,
                         current_high=current_bar["high"],
                         current_low=current_bar["low"],
+                        current_adx=current_bar.get("adx_norm", None) * 100.0 if is_v2 and "adx_norm" in current_bar.index else None,
                     )
 
             if (i + 1) % 1000 == 0:
@@ -533,13 +574,14 @@ def walk_forward_backtest(
                     risk    = out["risk_params"][0]
 
                     if sig_idx != Signal.HOLD.value and conf >= bt_config.min_confidence:
+                        _rs = DEFAULT_RISK_SCALING
                         ts = TradeSignal(
                             signal=Signal(sig_idx),
                             confidence=conf,
                             entry_price=current_bar["close"],
-                            stop_loss=float(risk[0].item() * 30 + 15),
-                            take_profit=float(risk[1].item() * 60 + 30),
-                            trailing_stop_pct=float(risk[2].item() * 0.3),
+                            stop_loss=_rs.sl_pips(float(risk[0].item())),
+                            take_profit=_rs.tp_pips(float(risk[1].item())),
+                            trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
                             timestamp=timestamp,
                         )
                         engine.open_position(
