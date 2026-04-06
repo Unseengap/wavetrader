@@ -176,7 +176,7 @@ def prepare_features_v2(
 
     # ── Raw ATR (needed for ATR-adaptive labels and ATR-relative SL/TP) ───
     atr_raw = calculate_atr(df["high"].values, df["low"].values, df["close"].values)
-    df["atr_raw"] = pd.Series(atr_raw).fillna(method="bfill").fillna(0.0).values
+    df["atr_raw"] = pd.Series(atr_raw).bfill().fillna(0.0).values
 
     # ── ADX (trend strength, 0-100) ───────────────────────────────────────
     if "adx" in extra_features:
@@ -446,63 +446,72 @@ class MTFForexDatasetV2(Dataset):
         if "dow" in extra:
             self._regime_cols.extend(["dow_sin", "dow_cos"])
 
-    def _get_tf_slice(self, tf: str, entry_idx: int) -> pd.DataFrame:
-        entry_df = self.prepared[self.entry_tf]
-        tf_df    = self.prepared[tf]
+        # ── Pre-compute numpy arrays + index maps for fast __getitem__ ────
+        self._arrays: Dict[str, Dict[str, np.ndarray]] = {}
+        _struct_cols = [f"structure_{i}" for i in range(8)]
+        _rsi_cols    = ["rsi_norm", "rsi_delta_norm", "rsi_accel_norm"]
+        _vol_cols    = ["volume_norm", "volume_ratio", "volume_delta"]
+        _ohlcv_cols  = ["open_norm", "high_norm", "low_norm", "close_norm", "volume_norm"]
+
+        for tf in config.timeframes:
+            df_tf = self.prepared[tf]
+            regime_cols = [c for c in self._regime_cols if c in df_tf.columns]
+            self._arrays[tf] = {
+                "ohlcv":     df_tf[_ohlcv_cols].values.astype(np.float32),
+                "structure": df_tf[_struct_cols].values.astype(np.float32),
+                "rsi":       df_tf[_rsi_cols].values.astype(np.float32),
+                "volume":    df_tf[_vol_cols].values.astype(np.float32),
+                "regime":    df_tf[regime_cols].values.astype(np.float32) if regime_cols else np.zeros((len(df_tf), 4), dtype=np.float32),
+            }
+
+        # Pre-compute higher-TF index mapping via searchsorted (O(1) per lookup)
+        self._tf_idx_map: Dict[str, np.ndarray] = {}
+        if "date" in entry_df.columns:
+            entry_dates = pd.to_datetime(entry_df["date"]).values
+            for tf in config.timeframes:
+                if tf == entry_tf:
+                    continue
+                tf_df = self.prepared[tf]
+                if "date" in tf_df.columns:
+                    tf_dates = pd.to_datetime(tf_df["date"]).values
+                    # For each entry bar, find the last tf bar <= that time
+                    self._tf_idx_map[tf] = np.searchsorted(tf_dates, entry_dates, side="right") - 1
+                    self._tf_idx_map[tf] = np.clip(self._tf_idx_map[tf], 0, len(tf_df) - 1)
+
+        # Pre-compute labels for all valid indices
+        self._labels = np.array([
+            _get_label_v2(entry_df.iloc[vi], atr_k, pair)
+            for vi in self.valid_indices
+        ], dtype=np.int64)
+
+    def _get_tf_arrays(self, tf: str, entry_idx: int) -> Dict[str, np.ndarray]:
+        """Fast numpy slice — no pandas involved."""
         lookback = self.config.lookbacks[tf]
 
         if tf == self.entry_tf:
-            start = max(0, entry_idx - lookback)
-            return tf_df.iloc[start:entry_idx]
-
-        if "date" in entry_df.columns and "date" in tf_df.columns:
-            entry_time = entry_df.iloc[entry_idx]["date"]
-            mask       = tf_df["date"] <= entry_time
-            tf_idx     = int(mask.sum()) - 1 if mask.any() else 0
+            tf_idx = entry_idx - 1  # up to but not including current bar
+        elif tf in self._tf_idx_map:
+            tf_idx = int(self._tf_idx_map[tf][entry_idx])
         else:
             entry_mins = self._TF_RATIOS.get(self.entry_tf, 15)
             tf_mins    = self._TF_RATIOS.get(tf, 60)
-            tf_idx     = min(int(entry_idx * entry_mins / tf_mins), len(tf_df) - 1)
+            tf_idx     = min(int(entry_idx * entry_mins / tf_mins), len(self._arrays[tf]["ohlcv"]) - 1)
 
-        start = max(0, tf_idx - lookback)
-        return tf_df.iloc[start : tf_idx + 1]
+        end   = tf_idx + 1
+        start = max(0, end - lookback)
 
-    def _to_tensors(self, sl: pd.DataFrame, lookback: int) -> Dict[str, Tensor]:
-        if len(sl) < lookback:
-            pad = pd.concat([sl.iloc[:1]] * (lookback - len(sl)) + [sl])
-        else:
-            pad = sl
-        pad = pad.iloc[-lookback:]
+        arrs = {}
+        for key, arr in self._arrays[tf].items():
+            sl = arr[start:end]
+            if len(sl) < lookback:
+                pad = np.repeat(sl[:1], lookback - len(sl), axis=0)
+                sl  = np.concatenate([pad, sl], axis=0)
+            arrs[key] = sl[-lookback:]
+        return arrs
 
-        tensors = {
-            "ohlcv": torch.tensor(
-                pad[["open_norm", "high_norm", "low_norm", "close_norm", "volume_norm"]].values,
-                dtype=torch.float32,
-            ),
-            "structure": torch.tensor(
-                pad[[f"structure_{i}" for i in range(8)]].values,
-                dtype=torch.float32,
-            ),
-            "rsi": torch.tensor(
-                pad[["rsi_norm", "rsi_delta_norm", "rsi_accel_norm"]].values,
-                dtype=torch.float32,
-            ),
-            "volume": torch.tensor(
-                pad[["volume_norm", "volume_ratio", "volume_delta"]].values,
-                dtype=torch.float32,
-            ),
-        }
-
-        # Regime tensor (v2 includes ADX + day-of-week)
-        regime_cols = [c for c in self._regime_cols if c in pad.columns]
-        if regime_cols:
-            tensors["regime"] = torch.tensor(
-                pad[regime_cols].values, dtype=torch.float32,
-            )
-        else:
-            tensors["regime"] = torch.zeros(lookback, 4, dtype=torch.float32)
-
-        return tensors
+    def _to_tensors_fast(self, arrs: Dict[str, np.ndarray]) -> Dict[str, Tensor]:
+        """Convert pre-sliced numpy arrays to tensors (no pandas)."""
+        return {k: torch.from_numpy(v) for k, v in arrs.items()}
 
     def _apply_augmentation(self, tensors: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """Apply training-time data augmentation."""
@@ -530,19 +539,13 @@ class MTFForexDatasetV2(Dataset):
         result: Dict = {}
 
         for tf in self.config.timeframes:
-            sl       = self._get_tf_slice(tf, actual)
-            lookback = self.config.lookbacks[tf]
-            tensors  = self._to_tensors(sl, lookback)
+            arrs    = self._get_tf_arrays(tf, actual)
+            tensors = self._to_tensors_fast(arrs)
             if tf == self.entry_tf:
                 tensors = self._apply_augmentation(tensors)
             result[tf] = tensors
 
-        label = _get_label_v2(
-            self.prepared[self.entry_tf].iloc[actual],
-            self._atr_k,
-            self.pair,
-        )
-        result["label"] = torch.tensor(label, dtype=torch.long)
+        result["label"] = torch.tensor(self._labels[idx], dtype=torch.long)
         return result
 
 
