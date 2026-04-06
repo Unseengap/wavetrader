@@ -588,12 +588,25 @@ def train_mtf_model_v2(
     print(f"Early Stop : patience={patience} on directional F1")
     print(f"LR Warmup  : {warmup} epochs → cosine annealing")
     print(f"Device     : {device}")
+    print(f"Train batches: {len(train_loader)}  |  Val batches: {len(val_loader)}")
+    print(f"Batch size : {train_loader.batch_size}  |  Train samples: ~{len(train_loader)*train_loader.batch_size:,}")
     print("-" * 70)
 
+    import time as _time
+    _epoch_times: List[float] = []
+
     for epoch in range(config.epochs):
+        _t0 = _time.time()
         train_loss = _train_epoch_mtf(model, train_loader, optimizer, criterion, device, config)
+        _t_train = _time.time() - _t0
+
+        _t1 = _time.time()
         val_loss, val_acc, per_class = _val_epoch_mtf_v2(model, val_loader, criterion, device, config)
+        _t_val = _time.time() - _t1
+
         scheduler.step()
+        _epoch_sec = _time.time() - _t0
+        _epoch_times.append(_epoch_sec)
 
         dir_f1 = _directional_f1(per_class)
         history["train_loss"].append(train_loss)
@@ -601,12 +614,16 @@ def train_mtf_model_v2(
         history["val_accuracy"].append(val_acc)
         history["val_f1_directional"].append(dir_f1)
         history["per_class_metrics"].append(per_class)
+        history.setdefault("dir_f1", []).append(dir_f1)
+        history.setdefault("epoch_time", []).append(_epoch_sec)
 
         # Early stopping on directional F1
+        saved_tag = ""
         if dir_f1 > best_f1:
             best_f1 = dir_f1
             epochs_no_improve = 0
             torch.save(model.state_dict(), checkpoint)
+            saved_tag = " ★ saved"
         else:
             epochs_no_improve += 1
 
@@ -614,13 +631,38 @@ def train_mtf_model_v2(
         buy_f1  = per_class.get("BUY", {}).get("f1", 0.0)
         sell_f1 = per_class.get("SELL", {}).get("f1", 0.0)
         hold_f1 = per_class.get("HOLD", {}).get("f1", 0.0)
+        buy_p   = per_class.get("BUY", {}).get("precision", 0.0)
+        buy_r   = per_class.get("BUY", {}).get("recall", 0.0)
+        sell_p  = per_class.get("SELL", {}).get("precision", 0.0)
+        sell_r  = per_class.get("SELL", {}).get("recall", 0.0)
+
+        # ETA calculation
+        avg_epoch = sum(_epoch_times) / len(_epoch_times)
+        remaining = config.epochs - (epoch + 1)
+        eta_sec   = avg_epoch * remaining
+        eta_min   = eta_sec / 60
+
+        # Phase indicator
+        if epoch + 1 <= warmup:
+            phase = "warmup"
+        elif epochs_no_improve > 0:
+            phase = f"patience {epochs_no_improve}/{patience}"
+        else:
+            phase = "improving"
 
         print(
             f"Epoch {epoch+1:3d}/{config.epochs}  "
             f"train={train_loss:.4f}  val={val_loss:.4f}  acc={val_acc:.2%}  "
             f"F1[B/S/H]={buy_f1:.2f}/{sell_f1:.2f}/{hold_f1:.2f}  "
-            f"dir_f1={dir_f1:.3f}  lr={lr:.1e}"
+            f"dir_f1={dir_f1:.3f}  lr={lr:.1e}  "
+            f"[{_epoch_sec:.0f}s  ETA {eta_min:.0f}m]  {phase}{saved_tag}"
         )
+
+        # Detailed per-class breakdown every 5 epochs
+        if (epoch + 1) % 5 == 0 or (epoch + 1) == 1:
+            print(f"  ├─ BUY   P={buy_p:.3f}  R={buy_r:.3f}  F1={buy_f1:.3f}")
+            print(f"  ├─ SELL  P={sell_p:.3f}  R={sell_r:.3f}  F1={sell_f1:.3f}")
+            print(f"  └─ train={_t_train:.1f}s  val={_t_val:.1f}s  best_f1={best_f1:.3f}")
 
         if epochs_no_improve >= patience:
             print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
@@ -630,7 +672,9 @@ def train_mtf_model_v2(
     if os.path.exists(checkpoint):
         model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
 
+    total_time = sum(_epoch_times)
     print("-" * 70)
+    print(f"Training complete in {total_time/60:.1f} min ({len(_epoch_times)} epochs, {total_time/len(_epoch_times):.1f}s avg)")
     print(f"Best directional F1: {best_f1:.3f}")
     return history
 
