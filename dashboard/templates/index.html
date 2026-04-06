@@ -90,12 +90,12 @@
                     Risk per Trade
                     <span class="wt-range-value" data-for="cfg-risk-per-trade" data-suffix="%">1%</span>
                 </label>
-                <input type="range" id="cfg-risk-per-trade" min="0.5" max="5" step="0.25" value="1">
+                <input type="range" id="cfg-risk-per-trade" min="0.5" max="25" step="0.25" value="1">
             </div>
 
-            <div class="wt-field">
-                <label for="cfg-leverage">Leverage</label>
-                <input type="number" id="cfg-leverage" value="30" min="1" max="500">
+            <div class="wt-field wt-locked">
+                <label for="cfg-leverage">Leverage <span class="wt-lock-badge">OANDA</span></label>
+                <input type="number" id="cfg-leverage" value="20" disabled>
             </div>
 
             <div class="wt-field">
@@ -111,19 +111,19 @@
         <div class="wt-config-section">
             <div class="wt-config-section-title">Spread & Costs</div>
 
-            <div class="wt-field">
-                <label for="cfg-spread-pips">Base Spread (pips)</label>
-                <input type="number" id="cfg-spread-pips" value="3.0" min="0.1" step="0.1">
+            <div class="wt-field wt-locked">
+                <label for="cfg-spread-pips">Base Spread (pips) <span class="wt-lock-badge">OANDA</span></label>
+                <input type="number" id="cfg-spread-pips" value="3.0" disabled>
             </div>
 
-            <div class="wt-field">
-                <label for="cfg-commission">Commission / Lot ($)</label>
-                <input type="number" id="cfg-commission" value="7.0" min="0" step="0.5">
+            <div class="wt-field wt-locked">
+                <label for="cfg-commission">Commission / Lot ($) <span class="wt-lock-badge">OANDA</span></label>
+                <input type="number" id="cfg-commission" value="0" disabled>
             </div>
 
-            <div class="wt-field">
-                <label for="cfg-pip-value">Pip Value ($)</label>
-                <input type="number" id="cfg-pip-value" value="10.0" min="0.1" step="0.1">
+            <div class="wt-field wt-locked">
+                <label for="cfg-pip-value">Pip Value ($) <span class="wt-lock-badge">OANDA</span></label>
+                <input type="number" id="cfg-pip-value" value="6.5" disabled>
             </div>
         </div>
 

@@ -561,6 +561,24 @@ body {
     box-shadow: 0 0 0 2px var(--wt-blue-dim);
 }
 
+/* OANDA-locked fields */
+.wt-locked input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    background: rgba(255,255,255,0.03);
+    border-style: dashed;
+}
+.wt-lock-badge {
+    font-size: 0.55rem;
+    background: rgba(255,165,0,0.2);
+    color: #ffa500;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+    letter-spacing: 0.04em;
+}
+
 .wt-field input[type="range"] {
     padding: 0;
     -webkit-appearance: none;

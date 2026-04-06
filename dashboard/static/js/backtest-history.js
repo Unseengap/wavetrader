@@ -104,15 +104,15 @@ async function loadSavedBacktest(runId) {
         currentResults = results;
         updateDashboard(results);
 
-        // Restore config panel
+        // Restore config panel (skip OANDA-locked fields)
         if (results.config) {
             const cfg = results.config;
             setField('cfg-initial-balance', cfg.initial_balance);
             setField('cfg-risk-per-trade', (cfg.risk_per_trade || 0.01) * 100);
-            setField('cfg-leverage', cfg.leverage);
-            setField('cfg-spread-pips', cfg.spread_pips);
-            setField('cfg-commission', cfg.commission_per_lot);
-            setField('cfg-pip-value', cfg.pip_value);
+            if (!isLocked('cfg-leverage')) setField('cfg-leverage', cfg.leverage);
+            if (!isLocked('cfg-spread-pips')) setField('cfg-spread-pips', cfg.spread_pips);
+            if (!isLocked('cfg-commission')) setField('cfg-commission', cfg.commission_per_lot);
+            if (!isLocked('cfg-pip-value')) setField('cfg-pip-value', cfg.pip_value);
             setField('cfg-min-confidence', (cfg.min_confidence || 0.55) * 100);
             setField('cfg-atr-halt', cfg.atr_halt_multiplier);
             setField('cfg-dd-threshold', (cfg.drawdown_reduce_threshold || 0.10) * 100);

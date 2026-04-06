@@ -52,10 +52,10 @@ NOTEBOOK_DEFAULTS: Dict[str, Any] = {
     # BacktestConfig
     "initial_balance": 25_000.0,
     "risk_per_trade": 0.01,
-    "leverage": 30.0,
+    "leverage": 20.0,
     "spread_pips": 3.0,
-    "commission_per_lot": 7.0,
-    "pip_value": 10.0,
+    "commission_per_lot": 0.0,
+    "pip_value": 6.5,
     "min_confidence": 0.55,
     "atr_halt_multiplier": 3.0,
     "drawdown_reduce_threshold": 0.10,
@@ -337,7 +337,25 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
         parquet_path = processed_dir / f"{pair_tag}_{tf_short}.parquet"
         if parquet_path.exists():
             try:
-                df_dict[tf] = pd.read_parquet(parquet_path)
+                df = pd.read_parquet(parquet_path)
+                # Reset timestamp index to column
+                if df.index.name in ("timestamp", "date", "datetime"):
+                    df = df.reset_index()
+                df.columns = [c.strip().lower() for c in df.columns]
+                # Rename mid-price columns to standard OHLC names
+                col_map = {}
+                for base in ("open", "high", "low", "close"):
+                    if f"{base}_mid" in df.columns and base not in df.columns:
+                        col_map[f"{base}_mid"] = base
+                if col_map:
+                    df = df.rename(columns=col_map)
+                # Normalize timestamp column to 'date'
+                if "date" not in df.columns:
+                    for alias in ("datetime", "timestamp", "time"):
+                        if alias in df.columns:
+                            df = df.rename(columns={alias: "date"})
+                            break
+                df_dict[tf] = df
                 logger.info("Loaded %s from %s", tf, parquet_path)
             except Exception as e:
                 logger.warning("Failed to read parquet %s: %s", parquet_path, e)
