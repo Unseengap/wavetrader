@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block title %}WaveTrader — Signal &amp; Trade Logs{% endblock %}
+{% block head %}
+<style>
+    body { background: #0d1117; color: #c9d1d9; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
+    .log-header { padding: 12px 20px; border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 16px; }
+    .log-header h5 { margin: 0; color: #58a6ff; }
+    .log-header .badge { font-size: 0.75rem; }
+    .log-controls { display: flex; gap: 8px; margin-left: auto; }
+    .log-controls button { font-size: 0.75rem; }
+    #log-container {
+        height: calc(100vh - 60px);
+        overflow-y: auto;
+        padding: 8px 16px;
+        scroll-behavior: smooth;
+    }
+    .log-line {
+        padding: 2px 0;
+        font-size: 0.82rem;
+        line-height: 1.5;
+        border-bottom: 1px solid #161b2233;
+        display: flex;
+        gap: 8px;
+        white-space: nowrap;
+    }
+    .log-line:hover { background: #161b22; }
+    .log-ts { color: #7d8590; min-width: 155px; flex-shrink: 0; }
+    .log-src { min-width: 110px; flex-shrink: 0; font-weight: 600; }
+    .log-src.oanda { color: #f0883e; }
+    .log-src.wavetrader { color: #a5d6ff; }
+    .log-src.dashboard { color: #d2a8ff; }
+    .log-msg { white-space: pre-wrap; word-break: break-all; }
+    .log-line.error .log-msg { color: #f85149; }
+    .log-line.warn .log-msg { color: #d29922; }
+    .log-line.info .log-msg { color: #c9d1d9; }
+
+    /* Source filter badges */
+    .filter-badge { cursor: pointer; opacity: 1; transition: opacity 0.15s; user-select: none; }
+    .filter-badge.off { opacity: 0.35; text-decoration: line-through; }
+
+    /* Keyword highlights */
+    .hl-buy { color: #3fb950; font-weight: 700; }
+    .hl-sell { color: #f85149; font-weight: 700; }
+    .hl-hold { color: #8b949e; }
+    .hl-filled { color: #3fb950; }
+    .hl-rejected { color: #f85149; font-weight: 700; }
+    .hl-pnl-pos { color: #3fb950; font-weight: 700; }
+    .hl-pnl-neg { color: #f85149; font-weight: 700; }
+    .hl-trailing { color: #d29922; }
+
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .status-dot.connected { background: #3fb950; }
+    .status-dot.disconnected { background: #f85149; }
+
+    #log-count { font-size: 0.7rem; color: #7d8590; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="log-header">
+    <h5><i class="bi bi-terminal"></i> Signal &amp; Trade Logs</h5>
+    <span class="status-dot disconnected" id="status-dot"></span>
+    <span id="log-count">0 entries</span>
+
+    <span class="filter-badge badge bg-info" data-source="wavetrader" id="filter-wavetrader">Engine</span>
+    <span class="filter-badge badge bg-secondary" data-source="dashboard" id="filter-dashboard">Dashboard</span>
+    <span class="filter-badge badge" style="background:#f0883e" data-source="oanda" id="filter-oanda">OANDA</span>
+
+    <div class="log-controls">
+        <button class="btn btn-sm btn-outline-secondary" id="btn-scroll" title="Auto-scroll">
+            <i class="bi bi-arrow-down-circle"></i> Auto-scroll
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" id="btn-clear" title="Clear">
+            <i class="bi bi-trash"></i>
+        </button>
+        <a href="/" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-house"></i> Dashboard
+        </a>
+    </div>
+</div>
+
+<div id="log-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const container = document.getElementById('log-container');
+    const statusDot = document.getElementById('status-dot');
+    const logCount = document.getElementById('log-count');
+    const btnScroll = document.getElementById('btn-scroll');
+    const btnClear = document.getElementById('btn-clear');
+
+    let autoScroll = true;
+    let entryCount = 0;
+    let filters = { wavetrader: true, dashboard: true, oanda: true };
+
+    // ── Keyword highlighting ───────────────────────────────────────────
+    function highlight(text) {
+        return text
+            .replace(/\bBUY\b/g, '<span class="hl-buy">BUY</span>')
+            .replace(/\bSELL\b/g, '<span class="hl-sell">SELL</span>')
+            .replace(/\bHOLD\b/g, '<span class="hl-hold">HOLD</span>')
+            .replace(/\bFILLED\b/g, '<span class="hl-filled">FILLED</span>')
+            .replace(/\bREJECTED\b/g, '<span class="hl-rejected">REJECTED</span>')
+            .replace(/\bTRADE_DOESNT_EXIST\b/g, '<span class="hl-rejected">TRADE_DOESNT_EXIST</span>')
+            .replace(/\bFIFO_VIOLATION[A-Z_]*/g, '<span class="hl-rejected">$&</span>')
+            .replace(/\bINSUFFICIENT_MARGIN\b/g, '<span class="hl-rejected">INSUFFICIENT_MARGIN</span>')
+            .replace(/Trailing SL/g, '<span class="hl-trailing">Trailing SL</span>')
+            .replace(/PnL=(-?\d+\.\d+)/g, function(m, v) {
+                return parseFloat(v) >= 0
+                    ? '<span class="hl-pnl-pos">PnL=' + v + '</span>'
+                    : '<span class="hl-pnl-neg">PnL=' + v + '</span>';
+            })
+            .replace(/pl=(-?[\d.]+)/g, function(m, v) {
+                if (v === '0.0000') return m;
+                return parseFloat(v) >= 0
+                    ? '<span class="hl-pnl-pos">pl=' + v + '</span>'
+                    : '<span class="hl-pnl-neg">pl=' + v + '</span>';
+            });
+    }
+
+    function getSourceClass(source) {
+        if (source.includes('oanda')) return 'oanda';
+        if (source.includes('wavetrader')) return 'wavetrader';
+        if (source.includes('dashboard')) return 'dashboard';
+        return 'wavetrader';
+    }
+
+    function getSourceLabel(source) {
+        if (source.includes('oanda')) return 'OANDA';
+        if (source.includes('wavetrader')) return 'ENGINE';
+        if (source.includes('dashboard')) return 'DASH';
+        return source;
+    }
+
+    function shouldShow(source) {
+        const cls = getSourceClass(source);
+        return filters[cls] !== false;
+    }
+
+    function addEntry(entry) {
+        if (!shouldShow(entry.source || '')) return;
+
+        const srcCls = getSourceClass(entry.source || '');
+        const level = entry.level || 'info';
+
+        const div = document.createElement('div');
+        div.className = `log-line ${level}`;
+        div.dataset.source = srcCls;
+
+        // Escape HTML in message then apply highlights
+        const escaped = (entry.message || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        div.innerHTML =
+            `<span class="log-ts">${entry.ts || ''}</span>` +
+            `<span class="log-src ${srcCls}">${getSourceLabel(entry.source || '')}</span>` +
+            `<span class="log-msg">${highlight(escaped)}</span>`;
+
+        container.appendChild(div);
+        entryCount++;
+        logCount.textContent = entryCount + ' entries';
+
+        if (autoScroll) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+
+    // ── Load recent entries first ──────────────────────────────────────
+    fetch('/api/logs/recent')
+        .then(r => r.json())
+        .then(entries => {
+            entries.forEach(addEntry);
+            connectSSE();
+        })
+        .catch(() => connectSSE());
+
+    // ── SSE connection ─────────────────────────────────────────────────
+    function connectSSE() {
+        const es = new EventSource('/api/logs/stream');
+        es.onopen = () => {
+            statusDot.className = 'status-dot connected';
+        };
+        es.onmessage = (ev) => {
+            try {
+                const data = JSON.parse(ev.data);
+                if (data.type === 'connected') return;
+                addEntry(data);
+            } catch(e) {}
+        };
+        es.onerror = () => {
+            statusDot.className = 'status-dot disconnected';
+            setTimeout(() => {
+                es.close();
+                connectSSE();
+            }, 3000);
+        };
+    }
+
+    // ── Controls ───────────────────────────────────────────────────────
+    btnScroll.addEventListener('click', () => {
+        autoScroll = !autoScroll;
+        btnScroll.classList.toggle('btn-outline-success', autoScroll);
+        btnScroll.classList.toggle('btn-outline-secondary', !autoScroll);
+        if (autoScroll) container.scrollTop = container.scrollHeight;
+    });
+
+    btnClear.addEventListener('click', () => {
+        container.innerHTML = '';
+        entryCount = 0;
+        logCount.textContent = '0 entries';
+    });
+
+    // Source filters
+    document.querySelectorAll('.filter-badge').forEach(badge => {
+        badge.addEventListener('click', () => {
+            const src = badge.dataset.source;
+            filters[src] = !filters[src];
+            badge.classList.toggle('off', !filters[src]);
+
+            // Show/hide existing entries
+            container.querySelectorAll('.log-line').forEach(line => {
+                if (line.dataset.source === src) {
+                    line.style.display = filters[src] ? '' : 'none';
+                }
+            });
+        });
+    });
+
+    // Detect scroll position
+    container.addEventListener('scroll', () => {
+        const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+        if (!atBottom && autoScroll) {
+            autoScroll = false;
+            btnScroll.classList.remove('btn-outline-success');
+            btnScroll.classList.add('btn-outline-secondary');
+        }
+    });
+})();
+</script>
+{% endblock %}

@@ -558,13 +558,20 @@ class StreamingEngine:
             )
             return
 
-        # If we have an open position in the opposite direction, close both accounts
+        # Same direction as existing position → hold, don't duplicate
+        if self.open_trade_id and self.open_trade_direction == signal.signal:
+            logger.info("Already %s — holding position %s", signal.signal.name, self.open_trade_id)
+            return
+
+        # Opposite direction → close then immediately open (atomic reversal)
         if (self.open_trade_id and self.open_trade_direction != signal.signal) or \
            (self.live_trade_id and self.live_trade_direction != signal.signal):
             self._close_position("Signal reversal")
+            self._open_position(signal, candle)
+            return
 
-        # If flat on both, open new positions
-        if self.open_trade_id is None and signal.signal != Signal.HOLD:
+        # Flat → open new position
+        if self.open_trade_id is None:
             self._open_position(signal, candle)
 
     def _open_position(self, signal: TradeSignal, candle: Candle) -> None:
@@ -623,11 +630,20 @@ class StreamingEngine:
         except Exception:
             balance = self.balance
 
-        risk_mult = self._risk_multiplier()
-        effective_risk = self.bt_config.risk_per_trade * risk_mult
-        risk_amount = balance * effective_risk
+        # Check available margin before placing
+        try:
+            if acct.margin_available <= 0:
+                logger.warning(
+                    "No margin available [%s] (margin_avail=%.2f) — skipping order",
+                    account.upper(), acct.margin_available,
+                )
+                return
+        except Exception:
+            pass  # acct may not exist if balance fallback was used
+
+        risk_amount = balance * self.bt_config.risk_per_trade
         lot = risk_amount / max(signal.stop_loss * pip_value, 1e-9)
-        lot = max(0.01, min(5.0, lot))
+        lot = max(0.01, lot)  # no artificial upper cap — OANDA enforces margin
 
         units = int(lot * _LOT_SIZE)
         if signal.signal == Signal.SELL:

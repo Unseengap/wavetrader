@@ -473,13 +473,21 @@ class LiveService:
             )
             return
 
-        # Close opposite positions first
+        # Same direction as existing position → hold, don't duplicate
+        if self._demo_trade_id and self._demo_trade_direction == sig:
+            logger.info("Already %s — holding demo position %s", sig, self._demo_trade_id)
+            return
+        if self._live_trade_id and self._live_trade_direction == sig:
+            logger.info("Already %s — holding live position %s", sig, self._live_trade_id)
+            return
+
+        # Opposite direction → close then immediately open (atomic reversal)
         if self._demo_trade_id and self._demo_trade_direction != sig:
             self._close_position_on("demo", "Signal reversal")
         if self._live_trade_id and self._live_trade_direction != sig:
             self._close_position_on("live", "Signal reversal")
 
-        # Open new positions if flat
+        # Open new positions (now flat after reversal, or was already flat)
         if self._demo_trade_id is None:
             self._open_position_on("demo", signal_dict, current_price)
         if self._live_available and self._live_trade_id is None:
@@ -520,19 +528,25 @@ class LiveService:
         pip = _PIP_SIZE.get(self._pair, 0.01)
         pip_value = _PIP_VALUE.get(self._pair, 6.5)
 
-        # Get balance from the specific account
+        # Get balance and check margin
         try:
             acct = client.get_account_summary()
             balance = acct.balance
+            if acct.margin_available <= 0:
+                logger.warning(
+                    "No margin available [%s] (margin_avail=%.2f) — skipping order",
+                    account.upper(), acct.margin_available,
+                )
+                return
         except Exception:
             balance = 25000
 
-        # Position sizing
+        # Position sizing — no artificial cap, OANDA enforces margin
         sl_pips = signal_dict["sl_pips"]
         tp_pips = signal_dict["tp_pips"]
         risk_amount = balance * self._risk_per_trade
         lot = risk_amount / max(sl_pips * pip_value, 1e-9)
-        lot = max(0.01, min(5.0, lot))
+        lot = max(0.01, lot)
         units = int(lot * 100000)
         if sig == "SELL":
             units = -units

@@ -20,11 +20,13 @@ def create_app() -> Flask:
     from .routes.backtest import backtest_bp
     from .routes.data import data_bp
     from .routes.live import live_bp
+    from .routes.logs import logs_bp
     from .routes.pages import pages_bp
 
     app.register_blueprint(pages_bp)
     app.register_blueprint(backtest_bp, url_prefix="/api/backtest")
     app.register_blueprint(data_bp, url_prefix="/api/data")
     app.register_blueprint(live_bp, url_prefix="/api/live")
+    app.register_blueprint(logs_bp, url_prefix="/api/logs")
 
     return app
