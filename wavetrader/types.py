@@ -31,6 +31,7 @@ class TradeSignal:
     take_profit: float        # pips
     trailing_stop_pct: float  # fraction of move to trail
     timestamp: datetime
+    exit_mode: str = "tp_sl"  # "tp_sl" (v1/v2) or "opposite_signal" (v3)
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Trade:
     take_profit: float
     trailing_stop_pct: float
     size: float               # Lot size (standard lots)
+    exit_mode: str = "tp_sl"  # "tp_sl" or "opposite_signal"
 
     # Mutable state — updated each bar while active
     current_sl: float = 0.0

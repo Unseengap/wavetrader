@@ -28,7 +28,10 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from .config import MTFConfig, SignalConfig
-from .indicators import calculate_atr, calculate_adx, calculate_rsi, classify_structure, session_features
+from .indicators import (
+    calculate_atr, calculate_adx, calculate_rsi, classify_structure,
+    session_features, detect_reversal_pattern, detect_trend_direction,
+)
 from .types import Signal
 
 _DEFAULT_SINGLE_CONFIG = SignalConfig()
@@ -549,8 +552,313 @@ class MTFForexDatasetV2(Dataset):
         return result
 
 
+# ─────────────────────────────────────────────────────────────────────────────# v3 Feature preparation & Dataset — 4H Reversal Swing Model
 # ─────────────────────────────────────────────────────────────────────────────
-# Resonance Buffer — episodic memory for “last N significant events”
+
+def prepare_features_v3(
+    df:             pd.DataFrame,
+    lookahead:      int  = 20,
+    pair:           str  = "GBP/JPY",
+    extra_features: list = None,
+    is_4h:          bool = False,
+    is_daily:       bool = False,
+) -> pd.DataFrame:
+    """
+    Extended feature preparation for v3 models.
+    Adds reversal pattern features (for 4H data) and trend direction (for daily data)
+    on top of v2 features.
+    """
+    df = prepare_features_v2(df, lookahead=lookahead, pair=pair, extra_features=extra_features)
+
+    # ── 4H Reversal Pattern features ──────────────────────────────────────
+    if is_4h:
+        pattern = detect_reversal_pattern(
+            df["open"].values, df["high"].values,
+            df["low"].values, df["close"].values,
+        )
+        df["reversal_type"]        = pattern[:, 0]
+        df["pattern_strength"]     = pattern[:, 1]
+        df["pattern_low_norm"]     = pattern[:, 2]
+        df["pattern_high_norm"]    = pattern[:, 3]
+        df["candle2_recovery"]     = pattern[:, 4]
+        df["candle3_confirmation"] = pattern[:, 5]
+        df["candle3_dip_recovery"] = pattern[:, 6]
+        df["trend_reversal_score"] = pattern[:, 7]
+
+    # ── Daily Trend Direction features ────────────────────────────────────
+    if is_daily:
+        trend = detect_trend_direction(
+            df["close"].values, df["high"].values, df["low"].values,
+            lookback=10,
+        )
+        df["trend_direction"] = trend[:, 0]
+        df["trend_strength"]  = trend[:, 1]
+
+    return df
+
+
+def _get_label_v3(
+    entry_row:    pd.Series,
+    tf_4h_df:     pd.DataFrame,
+    tf_daily_df:  pd.DataFrame,
+    entry_idx:    int,
+    idx_4h:       int,
+    idx_daily:    int,
+    atr_k:        float,
+    pair:         str,
+) -> int:
+    """
+    v3 label generation: BUY/SELL only when a valid 3-candle reversal pattern
+    is detected on 4H AND confirmed by daily trend direction.
+
+    Labelling logic:
+      - BUY: Daily trend is bearish (trend_direction < -0.2) AND 4H shows
+             bullish reversal (reversal_type == 1 AND candle3_confirmation == 1)
+      - SELL: Daily trend is bullish (trend_direction > 0.2) AND 4H shows
+              bearish reversal (reversal_type == 2 AND candle3_confirmation == 1)
+      - HOLD: Everything else
+
+    This produces a highly skewed dataset (mostly HOLD), which is correct for
+    the v3 strategy of fewer but higher-conviction trades.
+    """
+    # Check 4H reversal pattern
+    if idx_4h < 2 or idx_4h >= len(tf_4h_df):
+        return Signal.HOLD.value
+
+    row_4h = tf_4h_df.iloc[idx_4h]
+    reversal_type = row_4h.get("reversal_type", 0.0)
+    candle3_conf  = row_4h.get("candle3_confirmation", 0.0)
+
+    if candle3_conf < 0.5:
+        return Signal.HOLD.value
+
+    # Check daily trend direction
+    if idx_daily < 0 or idx_daily >= len(tf_daily_df):
+        return Signal.HOLD.value
+
+    row_daily = tf_daily_df.iloc[idx_daily]
+    trend_dir = row_daily.get("trend_direction", 0.0)
+
+    # Additional ATR-based validation: ensure move is significant
+    atr_val = entry_row.get("atr_raw", 0.0)
+    if atr_val > 0 and not np.isnan(atr_val):
+        entry_close = entry_row["close"]
+        future_high = entry_row.get("future_high", entry_close)
+        future_low  = entry_row.get("future_low", entry_close)
+        threshold = atr_k * atr_val
+        max_up   = future_high - entry_close
+        max_down = entry_close - future_low
+        has_significant_move = (max_up >= threshold) or (max_down >= threshold)
+    else:
+        has_significant_move = True  # Can't filter, accept pattern
+
+    if reversal_type == 1.0 and trend_dir < -0.15 and has_significant_move:
+        return Signal.BUY.value
+    elif reversal_type == 2.0 and trend_dir > 0.15 and has_significant_move:
+        return Signal.SELL.value
+
+    return Signal.HOLD.value
+
+
+class MTFForexDatasetV3(Dataset):
+    """
+    Multi-timeframe dataset for WaveTraderMTFv3 — 4H reversal swing model.
+
+    Key differences from V2:
+      - 3 timeframes (1h, 4h, 1d) instead of 4
+      - 4H data includes reversal pattern features (8 extra columns)
+      - Daily data includes trend direction features (2 extra columns)
+      - Labels based on reversal pattern + trend confirmation
+      - Produces mostly HOLD labels (sparse BUY/SELL) — this is correct
+    """
+
+    _TF_RATIOS: Dict[str, int] = {
+        "1min": 1, "5min": 5, "15min": 15, "30min": 30,
+        "1h": 60, "4h": 240, "1d": 1440,
+    }
+
+    def __init__(
+        self,
+        dataframes:  Dict[str, pd.DataFrame],
+        config,      # MTFv3Config
+        lookahead:   int  = 20,
+        pair:        str  = "GBP/JPY",
+        augment:     bool = False,
+    ) -> None:
+        self.config    = config
+        self.lookahead = lookahead
+        self.pair      = pair
+        self.augment   = augment
+        self._aug_noise_prob = getattr(config, 'augment_noise_prob', 0.3)
+        self._aug_drop_prob  = getattr(config, 'augment_dropout_prob', 0.1)
+
+        extra = getattr(config, 'extra_features', [])
+        atr_k = getattr(config, 'label_atr_k', 1.5)
+        self._atr_k = atr_k
+
+        # Prepare features per timeframe with v3 extras
+        self.prepared: Dict[str, pd.DataFrame] = {}
+        for tf, df in dataframes.items():
+            self.prepared[tf] = prepare_features_v3(
+                df.copy(),
+                lookahead=lookahead,
+                pair=pair,
+                extra_features=extra,
+                is_4h=(tf == "4h"),
+                is_daily=(tf == "1d"),
+            )
+
+        entry_tf = self.config.entry_timeframe
+        entry_df = self.prepared[entry_tf]
+        lookback = self.config.lookbacks[entry_tf]
+        self.valid_indices = list(range(lookback, len(entry_df) - lookahead))
+        self.entry_tf = entry_tf
+
+        # Regime columns (same as v2)
+        base_regime = ["session_tokyo", "session_london", "session_newyork", "atr_pct"]
+        self._regime_cols = list(base_regime)
+        if "adx" in extra:
+            self._regime_cols.append("adx_norm")
+        if "dow" in extra:
+            self._regime_cols.extend(["dow_sin", "dow_cos"])
+
+        # ── Pattern feature columns (4H) ─────────────────────────────────
+        self._pattern_cols = [
+            "reversal_type", "pattern_strength", "pattern_low_norm",
+            "pattern_high_norm", "candle2_recovery", "candle3_confirmation",
+            "candle3_dip_recovery", "trend_reversal_score",
+        ]
+
+        # ── Trend feature columns (Daily) ─────────────────────────────────
+        self._trend_cols = ["trend_direction", "trend_strength"]
+
+        # ── Pre-compute numpy arrays ──────────────────────────────────────
+        _struct_cols = [f"structure_{i}" for i in range(8)]
+        _rsi_cols    = ["rsi_norm", "rsi_delta_norm", "rsi_accel_norm"]
+        _vol_cols    = ["volume_norm", "volume_ratio", "volume_delta"]
+        _ohlcv_cols  = ["open_norm", "high_norm", "low_norm", "close_norm", "volume_norm"]
+
+        self._arrays: Dict[str, Dict[str, np.ndarray]] = {}
+        for tf in config.timeframes:
+            df_tf = self.prepared[tf]
+            regime_cols = [c for c in self._regime_cols if c in df_tf.columns]
+            arrays = {
+                "ohlcv":     df_tf[_ohlcv_cols].values.astype(np.float32),
+                "structure": df_tf[_struct_cols].values.astype(np.float32),
+                "rsi":       df_tf[_rsi_cols].values.astype(np.float32),
+                "volume":    df_tf[_vol_cols].values.astype(np.float32),
+                "regime":    df_tf[regime_cols].values.astype(np.float32) if regime_cols else np.zeros((len(df_tf), 4), dtype=np.float32),
+            }
+            # Add pattern features for 4H
+            if tf == "4h":
+                pcols = [c for c in self._pattern_cols if c in df_tf.columns]
+                if pcols:
+                    arrays["pattern"] = df_tf[pcols].values.astype(np.float32)
+                else:
+                    arrays["pattern"] = np.zeros((len(df_tf), 8), dtype=np.float32)
+            # Add trend features for daily
+            if tf == "1d":
+                tcols = [c for c in self._trend_cols if c in df_tf.columns]
+                if tcols:
+                    arrays["trend"] = df_tf[tcols].values.astype(np.float32)
+                else:
+                    arrays["trend"] = np.zeros((len(df_tf), 2), dtype=np.float32)
+
+            self._arrays[tf] = arrays
+
+        # ── Higher-TF index mapping via searchsorted ──────────────────────
+        self._tf_idx_map: Dict[str, np.ndarray] = {}
+        if "date" in entry_df.columns:
+            entry_dates = pd.to_datetime(entry_df["date"]).values
+            for tf in config.timeframes:
+                if tf == entry_tf:
+                    continue
+                tf_df = self.prepared[tf]
+                if "date" in tf_df.columns:
+                    tf_dates = pd.to_datetime(tf_df["date"]).values
+                    self._tf_idx_map[tf] = np.searchsorted(tf_dates, entry_dates, side="right") - 1
+                    self._tf_idx_map[tf] = np.clip(self._tf_idx_map[tf], 0, len(tf_df) - 1)
+
+        # ── Pre-compute labels ────────────────────────────────────────────
+        tf_4h_df    = self.prepared.get("4h", pd.DataFrame())
+        tf_daily_df = self.prepared.get("1d", pd.DataFrame())
+        self._labels = np.array([
+            _get_label_v3(
+                entry_df.iloc[vi],
+                tf_4h_df, tf_daily_df,
+                vi,
+                int(self._tf_idx_map.get("4h", np.array([0]))[vi]) if "4h" in self._tf_idx_map else 0,
+                int(self._tf_idx_map.get("1d", np.array([0]))[vi]) if "1d" in self._tf_idx_map else 0,
+                atr_k, pair,
+            )
+            for vi in self.valid_indices
+        ], dtype=np.int64)
+
+        # Print label distribution
+        buy_count  = int((self._labels == Signal.BUY.value).sum())
+        sell_count = int((self._labels == Signal.SELL.value).sum())
+        hold_count = int((self._labels == Signal.HOLD.value).sum())
+        total = len(self._labels)
+        print(f"  V3 Label Distribution: BUY={buy_count} ({buy_count/max(total,1):.1%})  "
+              f"SELL={sell_count} ({sell_count/max(total,1):.1%})  "
+              f"HOLD={hold_count} ({hold_count/max(total,1):.1%})")
+
+    def _get_tf_idx(self, tf: str, entry_idx: int) -> int:
+        if tf == self.entry_tf:
+            return entry_idx - 1
+        elif tf in self._tf_idx_map:
+            return int(self._tf_idx_map[tf][entry_idx])
+        else:
+            entry_mins = self._TF_RATIOS.get(self.entry_tf, 60)
+            tf_mins    = self._TF_RATIOS.get(tf, 240)
+            return min(int(entry_idx * entry_mins / tf_mins), len(self._arrays[tf]["ohlcv"]) - 1)
+
+    def _get_tf_arrays(self, tf: str, entry_idx: int) -> Dict[str, np.ndarray]:
+        lookback = self.config.lookbacks[tf]
+        tf_idx = self._get_tf_idx(tf, entry_idx)
+        end   = tf_idx + 1
+        start = max(0, end - lookback)
+
+        arrs = {}
+        for key, arr in self._arrays[tf].items():
+            sl = arr[start:end]
+            if len(sl) < lookback:
+                pad = np.repeat(sl[:1], lookback - len(sl), axis=0)
+                sl  = np.concatenate([pad, sl], axis=0)
+            arrs[key] = sl[-lookback:]
+        return arrs
+
+    def _apply_augmentation(self, tensors: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        if not self.augment:
+            return tensors
+        if torch.rand(1).item() < self._aug_noise_prob:
+            noise = torch.randn_like(tensors["ohlcv"]) * 0.01
+            tensors["ohlcv"] = tensors["ohlcv"] + noise
+        if torch.rand(1).item() < self._aug_drop_prob:
+            modality = torch.randint(0, 4, (1,)).item()
+            keys = ["ohlcv", "structure", "rsi", "volume"]
+            tensors[keys[modality]] = torch.zeros_like(tensors[keys[modality]])
+        return tensors
+
+    def __len__(self) -> int:
+        return len(self.valid_indices)
+
+    def __getitem__(self, idx: int) -> Dict[str, Dict[str, Tensor]]:
+        actual = self.valid_indices[idx]
+        result: Dict = {}
+
+        for tf in self.config.timeframes:
+            arrs = self._get_tf_arrays(tf, actual)
+            tensors = {k: torch.from_numpy(v) for k, v in arrs.items()}
+            if tf == self.entry_tf:
+                tensors = self._apply_augmentation(tensors)
+            result[tf] = tensors
+
+        result["label"] = torch.tensor(self._labels[idx], dtype=torch.long)
+        return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────# Resonance Buffer — episodic memory for “last N significant events”
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ResonanceBuffer:

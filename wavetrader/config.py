@@ -237,3 +237,100 @@ class MTFv2Config:
     @property
     def output_wave_dim(self) -> int:
         return self.fused_wave_dim + 176  # fused + causal dim
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MTF v3 Configuration — 4H Reversal Swing Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class MTFv3Config:
+    """
+    Configuration for WaveTraderMTFv3 — 4H reversal swing trading model.
+
+    Strategy: Detect 3-candle reversal patterns on 4H, confirmed by Daily trend
+    direction, with 1H entry timing. Holds trades until opposite reversal signal
+    fires — no fixed TP, only trailing SL.
+
+    Key differences from v1/v2:
+      - 3 timeframes (1h, 4h, 1d) instead of 4
+      - CandlePatternEncoder for 3-candle reversal detection on 4H
+      - No take-profit output — exit on opposite signal or trailing SL only
+      - Fewer but higher-conviction trades
+    """
+    # Timeframes: 1h (entry), 4h (confirmation/pattern), 1d (core trend)
+    timeframes: List[str] = field(
+        default_factory=lambda: ["1h", "4h", "1d"]
+    )
+    lookbacks: Dict[str, int] = field(
+        default_factory=lambda: {
+            "1h":  100,   # ~4 days of 1h bars
+            "4h":   50,   # ~8 days of 4h bars
+            "1d":   30,   # ~6 weeks of daily bars
+        }
+    )
+
+    # Wave dimensions
+    tf_wave_dim: int = 256
+    fused_wave_dim: int = 512
+
+    # Pattern encoder
+    pattern_lookback: int = 3       # 3-candle reversal window
+    pattern_wave_dim: int = 128     # Pattern embedding dim
+
+    # Model architecture
+    predictor_hidden: int = 512
+    predictor_heads: int = 8
+    predictor_layers: int = 4
+    predictor_ff_dim: int = 2048
+
+    # Training
+    dropout: float = 0.2
+    learning_rate: float = 1e-4
+    batch_size: int = 16
+    epochs: int = 100
+    warmup_epochs: int = 5
+
+    # Trading
+    pair: str = "GBP/JPY"
+    entry_timeframe: str = "1h"
+
+    # ── v3 Exit mode ──────────────────────────────────────────────────────
+    exit_mode: str = "opposite_signal"  # "tp_sl" (v1/v2) or "opposite_signal"
+    default_trailing_pct: float = 0.4   # Wider trail for swing trades
+
+    # ── v3 Label generation ───────────────────────────────────────────────
+    label_method: str = "reversal_pattern"
+    label_atr_k: float = 1.5
+    label_lookahead: int = 20      # Longer lookahead for swing trades
+    trend_lookback: int = 10       # Daily bars for trend direction
+
+    # ── v3 Extra features ─────────────────────────────────────────────────
+    extra_features: List[str] = field(
+        default_factory=lambda: ["adx", "dow"]
+    )
+    regime_dim: int = 7             # session(3) + atr_pct + adx + dow_sin + dow_cos
+
+    # ── v3 Architecture flags ─────────────────────────────────────────────
+    use_regime_gating: bool = True
+    use_temporal_cwc: bool = True
+
+    # ── v3 Training flags ─────────────────────────────────────────────────
+    use_focal_loss: bool = True
+    focal_gamma: float = 3.0        # Higher gamma — patterns are rare, focus on hard examples
+    focal_alpha: List[float] = field(
+        default_factory=lambda: [1.5, 1.5, 0.2]  # BUY/SELL weighted higher, HOLD suppressed
+    )
+    early_stopping_patience: int = 15  # More patience for sparse signals
+    use_augmentation: bool = True
+    augment_noise_prob: float = 0.3
+    augment_dropout_prob: float = 0.1
+
+    # ── v3 Backtest / execution ───────────────────────────────────────────
+    adx_filter_threshold: float = 20.0
+    max_hold_bars: int = 0          # 0 = no max hold (hold until opposite signal)
+    risk_scaling: str = "fixed"
+
+    @property
+    def output_wave_dim(self) -> int:
+        return self.fused_wave_dim + 176  # fused + causal dim

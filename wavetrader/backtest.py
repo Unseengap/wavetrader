@@ -152,6 +152,7 @@ class BacktestEngine:
             take_profit=tp,
             trailing_stop_pct=signal.trailing_stop_pct,
             size=lot,
+            exit_mode=getattr(signal, 'exit_mode', 'tp_sl'),
         )
         self._bars_in_trade = 0
         return self.open_trade
@@ -181,12 +182,13 @@ class BacktestEngine:
             if self._bars_in_trade >= max_hold:
                 return self.close_position(current_close, timestamp, "Max Hold")
 
+        is_opposite_exit = getattr(t, 'exit_mode', 'tp_sl') == 'opposite_signal'
+
         if t.direction == Signal.BUY:
             if current_high > t.highest_price:
                 t.highest_price = current_high
                 if t.trailing_stop_pct > 0:
-                    # v2 trailing: standard ratchet — SL = peak - initial_risk * (1 - trail%)
-                    initial_risk = t.entry_price - t.stop_loss  # original SL distance
+                    initial_risk = t.entry_price - t.stop_loss
                     trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
                     new_sl = t.highest_price - trail_distance
                     if new_sl > t.current_sl:
@@ -194,7 +196,8 @@ class BacktestEngine:
 
             if current_low <= t.current_sl:
                 return self.close_position(t.current_sl, timestamp, "Stop Loss")
-            if current_high >= t.take_profit:
+            # Skip TP check for opposite_signal exit mode
+            if not is_opposite_exit and current_high >= t.take_profit:
                 return self.close_position(t.take_profit, timestamp, "Take Profit")
 
         else:  # SELL
@@ -209,7 +212,8 @@ class BacktestEngine:
 
             if current_high >= t.current_sl:
                 return self.close_position(t.current_sl, timestamp, "Stop Loss")
-            if current_low <= t.take_profit:
+            # Skip TP check for opposite_signal exit mode
+            if not is_opposite_exit and current_low <= t.take_profit:
                 return self.close_position(t.take_profit, timestamp, "Take Profit")
 
         self._update_equity(current_close)
@@ -307,21 +311,29 @@ def run_backtest(
 ) -> BacktestResults:
     """
     Run a full bar-by-bar backtest on `df` using `model` for signal generation.
-    Supports single-TF, MTF v1, and MTF v2 backtesting.
+    Supports single-TF, MTF v1, MTF v2, and MTF v3 backtesting.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     bt_config = bt_config or BacktestConfig()
 
-    # Detect v2 config for enhanced features
-    from .config import MTFv2Config
+    # Detect config version for enhanced features
+    from .config import MTFv2Config, MTFv3Config
     is_v2 = isinstance(config, MTFv2Config)
-    v2_cfg = config if is_v2 else None
+    is_v3 = isinstance(config, MTFv3Config)
+    v2_cfg = config if (is_v2 or is_v3) else None
     engine = BacktestEngine(bt_config, v2_config=v2_cfg)
+
+    exit_mode = getattr(config, 'exit_mode', 'tp_sl')
+    default_trailing = getattr(config, 'default_trailing_pct', 0.0)
     
     if hasattr(config, 'timeframes'):
-        if is_v2:
+        if is_v3:
+            from .dataset import MTFForexDatasetV3
+            lookahead = getattr(config, 'label_lookahead', 20)
+            dataset = MTFForexDatasetV3(df, config, lookahead=lookahead, pair=config.pair, augment=False)
+        elif is_v2:
             from .dataset import MTFForexDatasetV2
             dataset = MTFForexDatasetV2(df, config, lookahead=10, pair=config.pair, augment=False)
         else:
@@ -341,6 +353,8 @@ def run_backtest(
     print(f"BACKTEST: {config.pair}  {getattr(config, 'timeframe', getattr(config, 'timeframes', 'MTF'))}")
     print(f"Initial Balance : ${bt_config.initial_balance:,.2f}")
     print(f"Risk per Trade  : {bt_config.risk_per_trade:.1%}")
+    if exit_mode == "opposite_signal":
+        print(f"Exit Mode       : opposite_signal (no TP, trailing SL only)")
     print("=" * 70)
 
     with torch.no_grad():
@@ -364,7 +378,13 @@ def run_backtest(
                     timestamp,
                 )
 
-            if engine.open_trade is None:
+            # For V3 opposite-signal mode: always run inference even with open trade
+            # to check if opposite signal fires
+            run_inference = (engine.open_trade is None)
+            if exit_mode == "opposite_signal" and engine.open_trade is not None:
+                run_inference = True
+
+            if run_inference:
                 sample = dataset[i]
                 if is_mtf:
                     model_input = {
@@ -384,24 +404,53 @@ def run_backtest(
                 risk     = out["risk_params"][0]
 
                 if sig_idx != Signal.HOLD.value and conf >= bt_config.min_confidence:
-                    _rs = DEFAULT_RISK_SCALING
-                    trade_signal = TradeSignal(
-                        signal=Signal(sig_idx),
-                        confidence=conf,
-                        entry_price=current_bar["close"],
-                        stop_loss=_rs.sl_pips(float(risk[0].item())),
-                        take_profit=_rs.tp_pips(float(risk[1].item())),
-                        trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
-                        timestamp=timestamp,
-                    )
-                    engine.open_position(
-                        trade_signal,
-                        current_bar["close"],
-                        timestamp,
-                        current_high=current_bar["high"],
-                        current_low=current_bar["low"],
-                        current_adx=current_bar.get("adx_norm", None) * 100.0 if is_v2 and "adx_norm" in current_bar.index else None,
-                    )
+                    new_signal = Signal(sig_idx)
+
+                    # V3: If we have an open trade and got an opposite signal → close & reverse
+                    if exit_mode == "opposite_signal" and engine.open_trade is not None:
+                        if engine.open_trade.direction != new_signal:
+                            engine.close_position(
+                                current_bar["close"], timestamp, "Opposite Signal"
+                            )
+                        else:
+                            # Same direction signal while trade is open — skip
+                            continue
+
+                    if engine.open_trade is None:
+                        _rs = DEFAULT_RISK_SCALING
+                        if is_v3:
+                            # V3: 2 risk params (SL + trailing), no TP
+                            trade_signal = TradeSignal(
+                                signal=new_signal,
+                                confidence=conf,
+                                entry_price=current_bar["close"],
+                                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                                take_profit=0.0,
+                                trailing_stop_pct=max(
+                                    _rs.trailing_pct(float(risk[1].item())),
+                                    default_trailing,
+                                ),
+                                timestamp=timestamp,
+                                exit_mode="opposite_signal",
+                            )
+                        else:
+                            trade_signal = TradeSignal(
+                                signal=new_signal,
+                                confidence=conf,
+                                entry_price=current_bar["close"],
+                                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                                take_profit=_rs.tp_pips(float(risk[1].item())),
+                                trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
+                                timestamp=timestamp,
+                            )
+                        engine.open_position(
+                            trade_signal,
+                            current_bar["close"],
+                            timestamp,
+                            current_high=current_bar["high"],
+                            current_low=current_bar["low"],
+                            current_adx=current_bar.get("adx_norm", None) * 100.0 if (is_v2 or is_v3) and "adx_norm" in current_bar.index else None,
+                        )
 
             if (i + 1) % 1000 == 0:
                 print(

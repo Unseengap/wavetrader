@@ -652,17 +652,15 @@ class LiveService:
     # ── Model loading ─────────────────────────────────────────────────────
 
     def _load_model(self) -> None:
-        """Try to load the latest WaveTraderMTF checkpoint."""
+        """Try to load the latest WaveTrader checkpoint (v1, v2, or v3)."""
         try:
             import torch
-            from wavetrader.config import MTFConfig
-            from wavetrader.model import WaveTraderMTF
+            from wavetrader.config import MTFConfig, MTFv3Config
+            from wavetrader.model import WaveTraderMTF, WaveTraderMTFv3
 
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self._model_config = MTFConfig(pair=self._pair)
-            self._model = WaveTraderMTF(self._model_config)
 
-            # Search for latest checkpoint
+            # Search for latest checkpoint — detect version from directory name
             ckpt_dirs = [
                 Path("checkpoints"),
                 Path("/checkpoints"),
@@ -675,6 +673,15 @@ class LiveService:
                 for d in sorted(ckpt_dir.iterdir(), reverse=True):
                     weights = d / "model_weights.pt"
                     if weights.exists():
+                        dir_name = d.name.lower()
+                        if "v3" in dir_name:
+                            self._model_config = MTFv3Config(pair=self._pair)
+                            self._model = WaveTraderMTFv3(self._model_config)
+                            logger.info("Detected V3 checkpoint: %s", d.name)
+                        else:
+                            self._model_config = MTFConfig(pair=self._pair)
+                            self._model = WaveTraderMTF(self._model_config)
+
                         state = torch.load(
                             str(weights), weights_only=False, map_location=self._device
                         )
@@ -691,6 +698,9 @@ class LiveService:
                     break
 
             if not loaded:
+                # Fallback to default MTF model without checkpoint
+                self._model_config = MTFConfig(pair=self._pair)
+                self._model = WaveTraderMTF(self._model_config)
                 logger.warning("No model checkpoint found — signals will not be generated")
                 self._model = None
 

@@ -16,6 +16,7 @@ from torch import Tensor
 from .config import MTFConfig, SignalConfig, DEFAULT_RISK_SCALING
 from .encoders import (
     CausalWaveChainer,
+    CandlePatternEncoder,
     PriceWaveEncoder,
     RegimeEncoder,
     RegimeGatedLayer,
@@ -940,6 +941,295 @@ class FluxSignalFabric(nn.Module):
                 take_profit=_rs.tp_pips(float(risk[1].item())),
                 trailing_stop_pct=_rs.trailing_pct(float(risk[2].item())),
                 timestamp=datetime.now(),
+            )
+
+    def count_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signal output head v3 — no TP output
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SignalHeadV3(nn.Module):
+    """
+    V3 signal head — outputs SL + trailing only (no TP).
+
+    Maps the last-position wave vector to:
+      - signal_logits  [B, 3]       BUY / SELL / HOLD
+      - confidence     [B, 1]       calibrated probability
+      - risk_params    [B, 2]       SL / trailing_pct (positive values)
+
+    No take-profit output — V3 exits on opposite signal or trailing SL only.
+    """
+
+    def __init__(self, wave_dim: int = 608, dropout: float = 0.1) -> None:
+        super().__init__()
+
+        self.signal_classifier = nn.Sequential(
+            nn.Linear(wave_dim, 256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 64),
+            nn.GELU(),
+            nn.Linear(64, 3),
+        )
+
+        self.confidence_head = nn.Sequential(
+            nn.Linear(wave_dim, 128),
+            nn.GELU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+        self.risk_head = nn.Sequential(
+            nn.Linear(wave_dim, 128),
+            nn.GELU(),
+            nn.Linear(128, 2),     # Only SL + trailing (no TP)
+            nn.Softplus(),
+        )
+
+    def forward(self, wave: Tensor) -> Dict[str, Tensor]:
+        if wave.dim() == 3:
+            wave = wave[:, -1, :]
+        return {
+            "signal_logits": self.signal_classifier(wave),
+            "confidence":    self.confidence_head(wave),
+            "risk_params":   self.risk_head(wave),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-timeframe model v3: WaveTraderMTFv3 — 4H Reversal Swing Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WaveTraderMTFv3(nn.Module):
+    """
+    WaveTrader Multi-Timeframe v3 — 4H reversal swing trading model.
+
+    Detects 3-candle reversal patterns on 4H, confirmed by Daily trend,
+    with 1H entry timing. Holds until opposite signal fires.
+
+    Architecture:
+      1. Daily Trend Encoder (TimeframeEncoderV2): Daily bars → trend context [B, dim]
+      2. 4H Pattern Encoder (CandlePatternEncoder): Last N 4H bars → reversal pattern
+         embedding [B, pattern_dim] + pattern_confidence [B, 1]
+      3. 4H Sequence Encoder (TimeframeEncoderV2): Full 4H history → context [B, dim]
+      4. 1H Entry Encoder (TimeframeEncoderV2, return_sequence=True): 1H bars →
+         entry timing [B, T, dim] → CWC → [B, entry_cwc_dim]
+      5. Pattern-Guided Fusion: Cross-attention where pattern embedding queries
+         all TF summaries + entry CWC
+      6. RegimeGatedLayer (FiLM conditioning)
+      7. Main CWC + WavePredictor
+      8. SignalHeadV3: signal_logits + confidence + risk_params (SL + trailing only)
+    """
+
+    def __init__(self, config=None) -> None:
+        super().__init__()
+        from .config import MTFv3Config
+        self.config = config or MTFv3Config()
+        cfg = self.config
+
+        # Per-TF encoders (v2 encoder supports return_sequence)
+        self.tf_encoders = nn.ModuleDict({
+            tf: TimeframeEncoderV2(cfg.tf_wave_dim, cfg.dropout)
+            for tf in cfg.timeframes
+        })
+
+        # 4H Pattern Encoder — specialised for reversal detection
+        self.pattern_encoder = CandlePatternEncoder(
+            wave_dim=cfg.pattern_wave_dim,
+            dropout=cfg.dropout,
+        )
+
+        # CWC for entry-TF (1H) temporal sequence
+        self.entry_cwc = CausalWaveChainer(
+            wave_dim=cfg.tf_wave_dim,
+            causal_dim=176,
+            dropout=cfg.dropout,
+        )
+        entry_cwc_dim = cfg.tf_wave_dim + 176  # 256 + 176 = 432
+
+        # Project entry CWC to match fusion dim
+        self.entry_proj = nn.Sequential(
+            nn.Linear(entry_cwc_dim, cfg.fused_wave_dim),
+            nn.LayerNorm(cfg.fused_wave_dim),
+            nn.GELU(),
+        )
+
+        # Project pattern embedding to match fusion dim
+        self.pattern_proj = nn.Sequential(
+            nn.Linear(cfg.pattern_wave_dim, cfg.fused_wave_dim),
+            nn.LayerNorm(cfg.fused_wave_dim),
+            nn.GELU(),
+        )
+
+        # Multi-source fusion: entry CWC + 4H context + daily context + pattern
+        # Uses cross-attention where pattern queries all other sources
+        n_sources = 4  # entry_proj, 4h_summary, daily_summary, pattern_proj
+        self.fusion_attn = nn.MultiheadAttention(
+            cfg.fused_wave_dim, num_heads=8, batch_first=True, dropout=cfg.dropout,
+        )
+        self.fusion_proj = nn.Sequential(
+            nn.Linear(cfg.fused_wave_dim * n_sources, cfg.fused_wave_dim * 2),
+            nn.GELU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(cfg.fused_wave_dim * 2, cfg.fused_wave_dim),
+            nn.LayerNorm(cfg.fused_wave_dim),
+        )
+
+        # Alignment head
+        self.alignment_head = nn.Sequential(
+            nn.Linear(cfg.fused_wave_dim * n_sources, 128),
+            nn.GELU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+        # Project higher-TF summaries to fused_wave_dim
+        self.tf_proj = nn.ModuleDict({
+            tf: nn.Linear(cfg.tf_wave_dim, cfg.fused_wave_dim)
+            for tf in cfg.timeframes if tf != cfg.entry_timeframe
+        })
+
+        # FiLM regime gating
+        regime_dim = getattr(cfg, 'regime_dim', 7)
+        self.use_regime_gating = getattr(cfg, 'use_regime_gating', True)
+        if self.use_regime_gating:
+            self.regime_gate = RegimeGatedLayer(cfg.fused_wave_dim, n_features=regime_dim)
+
+        # Main CWC + predictor
+        self.cwc = CausalWaveChainer(
+            wave_dim=cfg.fused_wave_dim,
+            causal_dim=176,
+            dropout=cfg.dropout,
+        )
+
+        _pred_cfg = SignalConfig(
+            fused_wave_dim=cfg.fused_wave_dim,
+            causal_dim=176,
+            predictor_hidden=cfg.predictor_hidden,
+            predictor_heads=cfg.predictor_heads,
+            predictor_layers=cfg.predictor_layers,
+            predictor_ff_dim=cfg.predictor_ff_dim,
+            dropout=cfg.dropout,
+        )
+        self.predictor = WavePredictor(_pred_cfg)
+        self.signal_head = SignalHeadV3(cfg.output_wave_dim, cfg.dropout)
+
+        self.last_alignment: Optional[Tensor] = None
+
+    def forward(self, batch: Dict[str, Dict[str, Tensor]]) -> Dict[str, Tensor]:
+        """
+        batch: {
+            "1h":  {ohlcv, structure, rsi, volume, regime},
+            "4h":  {ohlcv, structure, rsi, volume, regime, pattern},
+            "1d":  {ohlcv, structure, rsi, volume, regime, trend},
+        }
+        """
+        entry_tf = self.config.entry_timeframe  # "1h"
+
+        # 1. Entry-TF (1H): full temporal sequence → CWC → last position
+        entry_data = batch[entry_tf]
+        entry_seq = self.tf_encoders[entry_tf](
+            entry_data["ohlcv"],
+            entry_data["structure"],
+            entry_data["rsi"],
+            entry_data["volume"],
+            return_sequence=True,
+        )
+        entry_causal = self.entry_cwc(entry_seq)    # [B, T, cwc_dim]
+        entry_vec = entry_causal[:, -1, :]           # [B, entry_cwc_dim]
+        entry_proj = self.entry_proj(entry_vec)      # [B, fused_wave_dim]
+
+        # 2. 4H Pattern Encoder — uses OHLCV + pattern features + structure
+        h4_data = batch["4h"]
+        h4_pattern_feat = h4_data.get("pattern", torch.zeros(
+            h4_data["ohlcv"].shape[0], h4_data["ohlcv"].shape[1], 8,
+            device=h4_data["ohlcv"].device,
+        ))
+        pattern_vec, pattern_conf = self.pattern_encoder(
+            h4_data["ohlcv"], h4_pattern_feat, h4_data["structure"],
+        )
+        pattern_proj = self.pattern_proj(pattern_vec)  # [B, fused_wave_dim]
+
+        # 3. Higher-TF summary vectors (4H context, Daily context)
+        tf_summaries = {}
+        for tf in self.config.timeframes:
+            if tf == entry_tf:
+                continue
+            tf_data = batch[tf]
+            summary = self.tf_encoders[tf](
+                tf_data["ohlcv"],
+                tf_data["structure"],
+                tf_data["rsi"],
+                tf_data["volume"],
+                return_sequence=False,
+            )
+            tf_summaries[tf] = self.tf_proj[tf](summary)  # [B, fused_wave_dim]
+
+        # 4. Fusion: stack all sources and use cross-attention
+        B = entry_proj.size(0)
+        sources = [entry_proj]
+        for tf in self.config.timeframes:
+            if tf != entry_tf and tf in tf_summaries:
+                sources.append(tf_summaries[tf])
+        sources.append(pattern_proj)
+
+        # Stack for cross-attention: pattern queries the rest
+        stacked = torch.stack(sources, dim=1)           # [B, n_sources, fused_dim]
+        query = pattern_proj.unsqueeze(1)                # [B, 1, fused_dim]
+        attended, _ = self.fusion_attn(query, stacked, stacked)
+        attended = attended.squeeze(1)                    # [B, fused_dim]
+
+        # Weighted concat fusion
+        concat = stacked.view(B, -1)                     # [B, n_sources * fused_dim]
+        fused = self.fusion_proj(concat)                  # [B, fused_wave_dim]
+        alignment = self.alignment_head(concat)           # [B, 1]
+        self.last_alignment = alignment
+
+        # 5. FiLM regime gating
+        if self.use_regime_gating and "regime" in batch.get(entry_tf, {}):
+            regime = batch[entry_tf]["regime"]
+            if regime.dim() == 3:
+                regime = regime[:, -1, :]
+            fused = self.regime_gate(fused, regime)
+
+        # 6. Main CWC + predictor + signal head
+        fused = fused.unsqueeze(1)                        # [B, 1, fused_dim]
+        causal = self.cwc(fused)
+        output = self.signal_head(self.predictor(causal).squeeze(1))
+        output["alignment"] = alignment
+        output["pattern_confidence"] = pattern_conf
+        return output
+
+    def predict(self, batch: Dict[str, Dict[str, Tensor]]) -> TradeSignal:
+        """Single-sample inference → TradeSignal (no TP, opposite-signal exit)."""
+        self.eval()
+        with torch.no_grad():
+            out        = self.forward(batch)
+            signal_idx = out["signal_logits"][0].argmax(-1).item()
+            base_conf  = out["confidence"][0].item()
+            alignment  = out["alignment"][0].item()
+            pat_conf   = out["pattern_confidence"][0].item()
+
+            # Confidence = base × alignment × pattern_confidence
+            confidence = base_conf * (0.5 + 0.5 * alignment) * (0.5 + 0.5 * pat_conf)
+
+            risk = out["risk_params"][0]
+            _rs = DEFAULT_RISK_SCALING
+            return TradeSignal(
+                signal=Signal(signal_idx),
+                confidence=confidence,
+                entry_price=0.0,
+                stop_loss=_rs.sl_pips(float(risk[0].item())),
+                take_profit=0.0,  # No TP for V3
+                trailing_stop_pct=max(
+                    _rs.trailing_pct(float(risk[1].item())),
+                    self.config.default_trailing_pct,
+                ),
+                timestamp=datetime.now(),
+                exit_mode="opposite_signal",
             )
 
     def count_parameters(self) -> int:

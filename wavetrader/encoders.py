@@ -3,6 +3,7 @@ Wave encoder modules: CausalConv1d, per-modality encoders, and CausalWaveChainer
 All encoders are strictly causal (no future bar leakage during inference).
 """
 import math
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -288,3 +289,116 @@ class RegimeGatedLayer(nn.Module):
         gamma = self.gain(regime_features)   # [B, dim]
         beta  = self.bias(regime_features)   # [B, dim]
         return x * (1.0 + gamma) + beta
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Candle Pattern Encoder (v3) — specialised for 3-candle reversal detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CandlePatternEncoder(nn.Module):
+    """
+    Encode a window of 4H candles with special attention to the 3-candle
+    reversal pattern.
+
+    Input channels per bar:
+      - OHLCV (5) + pattern features (8) + structure (8) = 21 features
+      - Or just OHLCV (5) + pattern (8) = 13 if structure not provided
+
+    Architecture:
+      1. Linear projection of per-bar features → hidden_dim
+      2. Causal conv stack (kernel=3) to capture local candle interactions
+      3. Causal self-attention over the full lookback window
+      4. Last 3 positions (the reversal window) get special attention via
+         a small cross-attention from a learned "pattern query"
+      5. Output: pattern embedding [B, wave_dim] + pattern_confidence [B, 1]
+    """
+
+    def __init__(
+        self,
+        wave_dim:     int = 128,
+        ohlcv_dim:    int = 5,
+        pattern_dim:  int = 8,
+        structure_dim: int = 8,
+        dropout:      float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.wave_dim = wave_dim
+        in_dim = ohlcv_dim + pattern_dim + structure_dim  # 21
+
+        # Per-bar projection
+        self.input_proj = nn.Sequential(
+            nn.Linear(in_dim, 128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, wave_dim),
+        )
+
+        # Causal conv stack for local pattern interactions
+        self.conv_stack = nn.Sequential(
+            CausalConv1d(wave_dim, wave_dim, 3),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            CausalConv1d(wave_dim, wave_dim, 3),
+            nn.GELU(),
+        )
+
+        # Full-sequence causal self-attention
+        self.temporal_attn = nn.MultiheadAttention(
+            wave_dim, num_heads=4, batch_first=True, dropout=dropout,
+        )
+        self.norm1 = nn.LayerNorm(wave_dim)
+
+        # Pattern query — learned queries that attend to the last 3 positions
+        self.pattern_query = nn.Parameter(torch.randn(1, 1, wave_dim) * 0.02)
+        self.pattern_attn = nn.MultiheadAttention(
+            wave_dim, num_heads=4, batch_first=True, dropout=dropout,
+        )
+        self.norm2 = nn.LayerNorm(wave_dim)
+
+        # Pattern confidence head
+        self.confidence_head = nn.Sequential(
+            nn.Linear(wave_dim, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        ohlcv:     Tensor,
+        pattern:   Tensor,
+        structure: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        ohlcv:     [B, T, 5]   — normalised OHLCV
+        pattern:   [B, T, 8]   — reversal pattern features from detect_reversal_pattern
+        structure: [B, T, 8]   — market structure features
+
+        Returns:
+            embedding:  [B, wave_dim]  — pattern-aware representation
+            confidence: [B, 1]         — how confident the encoder is about a pattern
+        """
+        B, T, _ = ohlcv.shape
+
+        # Concatenate all inputs
+        x = torch.cat([ohlcv, pattern, structure], dim=-1)  # [B, T, 21]
+        x = self.input_proj(x)                               # [B, T, wave_dim]
+
+        # Causal conv for local patterns
+        conv_out = self.conv_stack(x.transpose(1, 2)).transpose(1, 2)
+        x = x + conv_out
+
+        # Full-sequence causal self-attention
+        mask = create_causal_mask(T, x.device)
+        attn_out, _ = self.temporal_attn(x, x, x, attn_mask=mask)
+        x = self.norm1(x + attn_out)
+
+        # Pattern query attends to last 3 bars (the reversal window)
+        last_3 = x[:, -3:, :]  # [B, 3, wave_dim]
+        query = self.pattern_query.expand(B, -1, -1)  # [B, 1, wave_dim]
+        pattern_out, _ = self.pattern_attn(query, last_3, last_3)
+        pattern_vec = self.norm2(pattern_out.squeeze(1))  # [B, wave_dim]
+
+        confidence = self.confidence_head(pattern_vec)  # [B, 1]
+
+        return pattern_vec, confidence

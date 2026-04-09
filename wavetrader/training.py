@@ -710,3 +710,204 @@ def _val_epoch_mtf_v2(
     val_acc  = correct / max(n, 1)
     per_class = _compute_per_class_metrics(all_preds, all_labels)
     return val_loss, val_acc, per_class
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v3 Training: SignalLossV3, train_mtf_model_v3
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SignalLossV3(nn.Module):
+    """
+    v3 loss function for 4H reversal swing model.
+
+    Key differences from v2:
+      - Higher penalty for false directional signals (BUY/SELL wrong is costly
+        because v3 holds trades long)
+      - Pattern confidence regularisation: push pattern_confidence toward actual
+        pattern correctness
+      - Focal loss with higher gamma (3.0) to handle extreme class imbalance
+        (mostly HOLD labels)
+    """
+
+    def __init__(
+        self,
+        use_focal: bool = True,
+        focal_gamma: float = 3.0,
+        focal_alpha: Optional[List[float]] = None,
+        false_signal_penalty: float = 0.5,
+    ) -> None:
+        super().__init__()
+        self.false_signal_penalty = false_signal_penalty
+        alpha = focal_alpha or [1.5, 1.5, 0.2]
+        if use_focal:
+            self.signal_loss = FocalLoss(alpha=alpha, gamma=focal_gamma)
+        else:
+            self.signal_loss = nn.CrossEntropyLoss(
+                weight=torch.tensor(alpha)
+            )
+
+    def forward(
+        self, output: Dict[str, Tensor], labels: Tensor
+    ) -> Dict[str, Tensor]:
+        signal_loss = self.signal_loss(output["signal_logits"], labels)
+
+        # Confidence calibration
+        probs   = F.softmax(output["signal_logits"], dim=-1)
+        correct = (probs.argmax(-1) == labels).float()
+        conf    = output["confidence"].squeeze(-1)
+        conf_loss = F.mse_loss(conf, correct)
+
+        # Pattern confidence regularisation (if available)
+        pat_conf_loss = torch.zeros(1, device=labels.device)
+        if "pattern_confidence" in output:
+            pat_conf = output["pattern_confidence"].squeeze(-1)
+            # Pattern confidence should be high when the label is BUY/SELL
+            is_directional = (labels != 2).float()  # 0=BUY, 1=SELL are directional
+            pat_conf_loss = F.mse_loss(pat_conf, is_directional)
+
+        # Extra penalty for false BUY/SELL on HOLD labels
+        false_penalty = torch.zeros(1, device=labels.device)
+        if self.false_signal_penalty > 0:
+            hold_mask = (labels == 2)
+            if hold_mask.any():
+                # For HOLD labels, penalise high BUY/SELL probabilities
+                directional_probs = probs[hold_mask, :2].sum(-1)  # P(BUY) + P(SELL) for HOLD bars
+                false_penalty = (directional_probs ** 2).mean() * self.false_signal_penalty
+
+        total = signal_loss + 0.1 * conf_loss + 0.1 * pat_conf_loss + false_penalty
+        return {
+            "total": total,
+            "signal_loss": signal_loss,
+            "conf_loss": conf_loss,
+            "pat_conf_loss": pat_conf_loss,
+            "false_penalty": false_penalty,
+        }
+
+
+def train_mtf_model_v3(
+    model:        nn.Module,
+    train_loader: DataLoader,
+    val_loader:   DataLoader,
+    config,       # MTFv3Config
+    device:       torch.device,
+    checkpoint:   str = "wavetrader_mtf_v3_best.pt",
+) -> Dict[str, List]:
+    """
+    Train WaveTraderMTFv3 — 4H reversal swing model.
+
+    Same structure as v2 training but with:
+      - SignalLossV3 (pattern confidence reg + false signal penalty)
+      - Higher focal gamma for extreme class imbalance
+      - More patience for early stopping (sparse signal patterns)
+    """
+    model     = model.to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config.learning_rate, weight_decay=0.01
+    )
+
+    warmup = getattr(config, 'warmup_epochs', 5)
+    scheduler = WarmupCosineScheduler(optimizer, warmup, config.epochs)
+
+    use_focal = getattr(config, 'use_focal_loss', True)
+    gamma     = getattr(config, 'focal_gamma', 3.0)
+    alpha     = getattr(config, 'focal_alpha', [1.5, 1.5, 0.2])
+    criterion = SignalLossV3(use_focal=use_focal, focal_gamma=gamma, focal_alpha=alpha).to(device)
+
+    patience    = getattr(config, 'early_stopping_patience', 15)
+    best_f1     = 0.0
+    epochs_no_improve = 0
+
+    history: Dict[str, List] = {
+        "train_loss": [], "val_loss": [], "val_accuracy": [],
+        "val_f1_directional": [], "per_class_metrics": [],
+    }
+
+    print(f"\nTraining WaveTraderMTFv3  ({_count(model):,} parameters)")
+    print(f"Timeframes : {config.timeframes}")
+    print(f"Exit Mode  : {config.exit_mode}")
+    print(f"Focal Loss : {'ON' if use_focal else 'OFF'} (gamma={gamma})")
+    print(f"Early Stop : patience={patience} on directional F1")
+    print(f"LR Warmup  : {warmup} epochs → cosine annealing")
+    print(f"Device     : {device}")
+    print(f"Train batches: {len(train_loader)}  |  Val batches: {len(val_loader)}")
+    print("-" * 70)
+
+    import time as _time
+    _epoch_times: List[float] = []
+
+    for epoch in range(config.epochs):
+        _t0 = _time.time()
+        train_loss = _train_epoch_mtf(model, train_loader, optimizer, criterion, device, config)
+        _t_train = _time.time() - _t0
+
+        _t1 = _time.time()
+        val_loss, val_acc, per_class = _val_epoch_mtf_v2(model, val_loader, criterion, device, config)
+        _t_val = _time.time() - _t1
+
+        scheduler.step()
+        _epoch_sec = _time.time() - _t0
+        _epoch_times.append(_epoch_sec)
+
+        dir_f1 = _directional_f1(per_class)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["val_accuracy"].append(val_acc)
+        history["val_f1_directional"].append(dir_f1)
+        history["per_class_metrics"].append(per_class)
+        history.setdefault("dir_f1", []).append(dir_f1)
+        history.setdefault("epoch_time", []).append(_epoch_sec)
+
+        saved_tag = ""
+        if dir_f1 > best_f1:
+            best_f1 = dir_f1
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), checkpoint)
+            saved_tag = " ★ saved"
+        else:
+            epochs_no_improve += 1
+
+        lr = optimizer.param_groups[0]["lr"]
+        buy_f1  = per_class.get("BUY", {}).get("f1", 0.0)
+        sell_f1 = per_class.get("SELL", {}).get("f1", 0.0)
+        hold_f1 = per_class.get("HOLD", {}).get("f1", 0.0)
+        buy_p   = per_class.get("BUY", {}).get("precision", 0.0)
+        buy_r   = per_class.get("BUY", {}).get("recall", 0.0)
+        sell_p  = per_class.get("SELL", {}).get("precision", 0.0)
+        sell_r  = per_class.get("SELL", {}).get("recall", 0.0)
+
+        avg_epoch = sum(_epoch_times) / len(_epoch_times)
+        remaining = config.epochs - (epoch + 1)
+        eta_min   = avg_epoch * remaining / 60
+
+        if epoch + 1 <= warmup:
+            phase = "warmup"
+        elif epochs_no_improve > 0:
+            phase = f"patience {epochs_no_improve}/{patience}"
+        else:
+            phase = "improving"
+
+        print(
+            f"Epoch {epoch+1:3d}/{config.epochs}  "
+            f"train={train_loss:.4f}  val={val_loss:.4f}  acc={val_acc:.2%}  "
+            f"F1[B/S/H]={buy_f1:.2f}/{sell_f1:.2f}/{hold_f1:.2f}  "
+            f"dir_f1={dir_f1:.3f}  lr={lr:.1e}  "
+            f"[{_epoch_sec:.0f}s  ETA {eta_min:.0f}m]  {phase}{saved_tag}"
+        )
+
+        if (epoch + 1) % 5 == 0 or (epoch + 1) == 1:
+            print(f"  ├─ BUY   P={buy_p:.3f}  R={buy_r:.3f}  F1={buy_f1:.3f}")
+            print(f"  ├─ SELL  P={sell_p:.3f}  R={sell_r:.3f}  F1={sell_f1:.3f}")
+            print(f"  └─ train={_t_train:.1f}s  val={_t_val:.1f}s  best_f1={best_f1:.3f}")
+
+        if epochs_no_improve >= patience:
+            print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+            break
+
+    if os.path.exists(checkpoint):
+        model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+
+    total_time = sum(_epoch_times)
+    print("-" * 70)
+    print(f"Training complete in {total_time/60:.1f} min ({len(_epoch_times)} epochs, {total_time/len(_epoch_times):.1f}s avg)")
+    print(f"Best directional F1: {best_f1:.3f}")
+    return history

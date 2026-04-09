@@ -61,7 +61,7 @@ Utils
 """
 
 from .backtest import BacktestEngine, run_backtest, walk_forward_backtest
-from .config import BacktestConfig, MTFConfig, MTFv2Config, ResonanceConfig, SIConfig, SignalConfig
+from .config import BacktestConfig, MTFConfig, MTFv2Config, MTFv3Config, ResonanceConfig, SIConfig, SignalConfig
 from .data import (
     detect_gaps,
     filter_flash_crashes,
@@ -76,18 +76,20 @@ from .data import (
     preprocess_pipeline,
     verify_session_alignment,
 )
-from .dataset import ForexDataset, MTFForexDataset, MTFForexDatasetV2, ResonanceBuffer, mtf_collate_fn
-from .encoders import RegimeGatedLayer
+from .dataset import ForexDataset, MTFForexDataset, MTFForexDatasetV2, MTFForexDatasetV3, ResonanceBuffer, mtf_collate_fn
+from .encoders import CandlePatternEncoder, RegimeGatedLayer
 from .indicators import calculate_adx, calculate_hurst
-from .model import CrossPairAttention, FluxSignal, FluxSignalFabric, WaveTraderMTF, WaveTraderMTFv2
+from .model import CrossPairAttention, FluxSignal, FluxSignalFabric, WaveTraderMTF, WaveTraderMTFv2, WaveTraderMTFv3
 from .training import (
     FocalLoss,
     SignalLoss,
     SignalLossV2,
+    SignalLossV3,
     SynapticIntelligence,
     train_model,
     train_mtf_model,
     train_mtf_model_v2,
+    train_mtf_model_v3,
     walk_forward_splits,
 )
 from .types import BacktestResults, Signal, StructureType, Trade, TradeSignal

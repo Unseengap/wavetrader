@@ -56,7 +56,19 @@ _OHLCV = ["date", "open", "high", "low", "close", "volume"]
 def _normalise_df(df: pd.DataFrame) -> pd.DataFrame:
     """Lowercase columns, sort by date, reset index."""
     df = df.copy()
+    # Handle timestamp-indexed parquet (processed_data format)
+    if df.index.name in ("timestamp", "date", "datetime"):
+        df = df.reset_index()
     df.columns = [str(c).strip().lower() for c in df.columns]
+    # Map mid-price columns from preprocessed parquets
+    _mid_map = {"open_mid": "open", "high_mid": "high", "low_mid": "low", "close_mid": "close"}
+    df = df.rename(columns={k: v for k, v in _mid_map.items() if k in df.columns and v not in df.columns})
+    # Find date column
+    if "date" not in df.columns:
+        for alias in ("timestamp", "datetime", "time"):
+            if alias in df.columns:
+                df = df.rename(columns={alias: "date"})
+                break
     if "date" not in df.columns:
         raise ValueError(f"DataFrame missing 'date' column. Got: {list(df.columns)}")
     df["date"] = pd.to_datetime(df["date"], utc=False, errors="coerce")
