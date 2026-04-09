@@ -176,10 +176,11 @@ class BacktestEngine:
         t = self.open_trade
         self._bars_in_trade += 1
 
-        # v2: Max hold period — close at market if trade has been open too long
+        # v2/v3: Max hold period — close at market if trade has been open too long
+        # max_hold_bars == 0 means disabled (V3 uses opposite-signal exit instead)
         if self.v2_config is not None:
             max_hold = getattr(self.v2_config, 'max_hold_bars', 50)
-            if self._bars_in_trade >= max_hold:
+            if max_hold > 0 and self._bars_in_trade >= max_hold:
                 return self.close_position(current_close, timestamp, "Max Hold")
 
         is_opposite_exit = getattr(t, 'exit_mode', 'tp_sl') == 'opposite_signal'
