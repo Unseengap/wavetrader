@@ -265,7 +265,10 @@ class TimeframeEncoder(nn.Module):
     """
     Compress one timeframe's [B, T, features] → [B, tf_wave_dim] summary vector.
     Uses the same four modality encoders + causal temporal self-attention.
+    Now includes optional regime context (session flags + ATR percentile).
     """
+
+    REGIME_DIM = 16  # Output dim of regime encoder
 
     def __init__(self, wave_dim: int = 256, dropout: float = 0.1) -> None:
         super().__init__()
@@ -288,7 +291,10 @@ class TimeframeEncoder(nn.Module):
             nn.Linear(3, 32), nn.GELU(), nn.Linear(32, wave_dim // 8)
         )
 
-        combined_dim = wave_dim // 2 + wave_dim // 4 + wave_dim // 8 + wave_dim // 8
+        # Regime encoder: [B, T, 4] → [B, T, REGIME_DIM]
+        self.regime_enc = RegimeEncoder(wave_dim=self.REGIME_DIM, dropout=dropout)
+
+        combined_dim = wave_dim // 2 + wave_dim // 4 + wave_dim // 8 + wave_dim // 8 + self.REGIME_DIM
         self.fusion = nn.Sequential(
             nn.Linear(combined_dim, wave_dim),
             nn.LayerNorm(wave_dim),
@@ -307,14 +313,25 @@ class TimeframeEncoder(nn.Module):
         structure: Tensor,
         rsi:       Tensor,
         volume:    Tensor,
+        regime:    Optional[Tensor] = None,
     ) -> Tensor:
-        """All inputs [B, T, features]  →  [B, wave_dim]"""
+        """All inputs [B, T, features]  →  [B, wave_dim]
+
+        regime: optional [B, T, 4] — session flags + ATR percentile.
+        If not provided, zero-filled for backward compatibility.
+        """
         price_wave     = self.price_conv(ohlcv.transpose(1, 2)).transpose(1, 2)
         structure_wave = self.structure_enc(structure)
         rsi_wave       = self.rsi_enc(rsi)
         volume_wave    = self.volume_enc(volume)
 
-        combined = torch.cat([price_wave, structure_wave, rsi_wave, volume_wave], dim=-1)
+        if regime is not None:
+            regime_wave = self.regime_enc(regime)
+        else:
+            B, T, _ = price_wave.shape
+            regime_wave = torch.zeros(B, T, self.REGIME_DIM, device=price_wave.device)
+
+        combined = torch.cat([price_wave, structure_wave, rsi_wave, volume_wave, regime_wave], dim=-1)
         fused    = self.fusion(combined)
 
         mask = create_causal_mask(fused.size(1), fused.device)
@@ -438,7 +455,7 @@ class WaveTraderMTF(nn.Module):
 
     def forward(self, batch: Dict[str, Dict[str, Tensor]]) -> Dict[str, Tensor]:
         """
-        batch: {tf: {ohlcv, structure, rsi, volume}, ...}
+        batch: {tf: {ohlcv, structure, rsi, volume, regime(opt)}, ...}
         """
         tf_waves = [
             self.tf_encoders[tf](
@@ -446,6 +463,7 @@ class WaveTraderMTF(nn.Module):
                 batch[tf]["structure"],
                 batch[tf]["rsi"],
                 batch[tf]["volume"],
+                batch[tf].get("regime"),
             )
             for tf in self.config.timeframes
         ]
@@ -455,8 +473,10 @@ class WaveTraderMTF(nn.Module):
 
         fused  = fused.unsqueeze(1)         # [B, 1, fused_dim]
         causal = self.cwc(fused)
-        output = self.signal_head(self.predictor(causal).squeeze(1))
+        wave_state = self.predictor(causal).squeeze(1)
+        output = self.signal_head(wave_state)
         output["alignment"] = alignment
+        output["wave_state"] = wave_state   # for ResonanceBuffer
         return output
 
     def predict(self, batch: Dict[str, Dict[str, Tensor]]) -> TradeSignal:

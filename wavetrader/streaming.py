@@ -30,12 +30,13 @@ import pandas as pd
 import torch
 from torch import Tensor
 
-from .config import BacktestConfig, MTFConfig, ResonanceConfig, DEFAULT_RISK_SCALING
+from .config import BacktestConfig, MTFConfig, ResonanceConfig, SIConfig, DEFAULT_RISK_SCALING
 from .dataset import ResonanceBuffer, prepare_features
 from .model import WaveTraderMTF
 from .monitor import Monitor, MonitorConfig
 from .oanda import Candle, OANDAClient, OANDAConfig, tf_to_granularity
 from .state import LiveState, StateManager
+from .training import SynapticIntelligence
 from .types import Signal, TradeSignal
 from .copytrade import CopyTradeManager, UserRegistry
 
@@ -131,6 +132,7 @@ class StreamingEngine:
         self.open_trade_direction: Optional[Signal] = None
         self.open_trade_entry: Optional[float] = None
         self.open_trade_sl: Optional[float] = None
+        self.open_trade_initial_sl: Optional[float] = None  # immutable original SL
         self.open_trade_tp: Optional[float] = None
         self.open_trade_trailing_pct: float = 0.0
         self.open_trade_peak: float = 0.0  # For trailing stop
@@ -156,6 +158,19 @@ class StreamingEngine:
             capacity=self.res_config.capacity,
             wave_dim=self.config.output_wave_dim,
         )
+        self._last_wave_state: Optional[Tensor] = None  # For resonance storage on close
+
+        # Synaptic Intelligence — online continual learning
+        self.si_config = SIConfig()
+        self.si = SynapticIntelligence(
+            model=self.model,
+            si_lambda=self.si_config.si_lambda,
+            epsilon=self.si_config.epsilon,
+        )
+        self._si_optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=1e-5, weight_decay=1e-6,
+        )
+        self._online_batch_count: int = 0
 
         # State persistence
         self.state_mgr = StateManager(checkpoint_dir)
@@ -223,6 +238,7 @@ class StreamingEngine:
                 self.open_trade_direction = Signal.BUY if t.units > 0 else Signal.SELL
                 self.open_trade_entry = t.price
                 self.open_trade_sl = t.stop_loss
+                self.open_trade_initial_sl = t.stop_loss
                 self.open_trade_tp = t.take_profit
                 logger.info("Existing demo position: %s %s @ %.3f", t.trade_id, self.open_trade_direction.name, t.price)
         except Exception as e:
@@ -490,6 +506,14 @@ class StreamingEngine:
                 "volume": volume.to(self.device),
             }
 
+            # Regime context: session flags + ATR percentile
+            regime_cols = ["session_tokyo", "session_london", "session_newyork", "atr_pct"]
+            if all(c in padded.columns for c in regime_cols):
+                regime = torch.tensor(
+                    padded[regime_cols].values, dtype=torch.float32,
+                ).unsqueeze(0)
+                tf_batch["regime"] = regime.to(self.device)
+
             batch[tf] = tf_batch
 
         return batch
@@ -514,6 +538,24 @@ class StreamingEngine:
             sl_pips = _rs.sl_pips(float(risk[0].item()))
             tp_pips = _rs.tp_pips(float(risk[1].item()))
             trailing = _rs.trailing_pct(float(risk[2].item()))
+
+            # ResonanceBuffer: retrieve similar past waves for confidence calibration
+            wave_state = out.get("wave_state")
+            if wave_state is not None:
+                self._last_wave_state = wave_state.detach()
+                res = self.resonance.retrieve_with_outcomes(wave_state, k=self.res_config.top_k)
+                if res is not None:
+                    _, past_outcomes = res
+                    win_rate = sum(1 for o in past_outcomes if o > 0) / len(past_outcomes)
+                    # Scale confidence: if similar past waves mostly lost, dampen;
+                    # if they mostly won, slightly boost.
+                    resonance_bias = 0.5 + 0.5 * (win_rate - 0.5)  # range: 0.25-0.75
+                    confidence *= resonance_bias
+                    logger.debug(
+                        "Resonance: %d/%d similar waves won (bias=%.2f)",
+                        sum(1 for o in past_outcomes if o > 0), len(past_outcomes),
+                        resonance_bias,
+                    )
 
             sig = Signal(signal_idx)
             entry = current_price
@@ -667,6 +709,7 @@ class StreamingEngine:
                     self.open_trade_direction = signal.signal
                     self.open_trade_entry = order.price
                     self.open_trade_sl = sl_price
+                    self.open_trade_initial_sl = sl_price
                     self.open_trade_tp = tp_price
                     self.open_trade_trailing_pct = signal.trailing_stop_pct
                     self.open_trade_peak = order.price
@@ -733,11 +776,21 @@ class StreamingEngine:
         if self.copy_trade_mgr:
             self.copy_trade_mgr.copy_close(reason)
 
+        # Store wave state + outcome in ResonanceBuffer for episodic memory
+        if self._last_wave_state is not None and pnl != 0.0:
+            stored = self.resonance.store(self._last_wave_state, pnl)
+            if stored:
+                logger.info(
+                    "Resonance: stored wave state (PnL=%.2f, buffer=%d/%d)",
+                    pnl, len(self.resonance._waves), self.resonance.capacity,
+                )
+
         # Reset demo position state
         self.open_trade_id = None
         self.open_trade_direction = None
         self.open_trade_entry = None
         self.open_trade_sl = None
+        self.open_trade_initial_sl = None
         self.open_trade_tp = None
         self.open_trade_trailing_pct = 0.0
         self.open_trade_peak = 0.0
@@ -754,6 +807,60 @@ class StreamingEngine:
 
         # Update equity tracking
         self._update_equity()
+
+        # Online learning step: adapt model to recent trade outcome
+        if pnl != 0.0:
+            self._online_learn(pnl)
+
+    def _online_learn(self, pnl: float) -> None:
+        """One-step online learning using Synaptic Intelligence.
+
+        After each closed trade, do a single gradient step to nudge the model
+        toward the correct signal (if it was wrong) while SI regularisation
+        prevents catastrophic forgetting of older knowledge.
+        """
+        batch = self._build_batch()
+        if batch is None:
+            return
+
+        try:
+            self.model.train()
+            self._si_optimizer.zero_grad()
+
+            out = self.model.forward(batch)
+            signal_logits = out["signal_logits"]  # [1, 3]
+
+            # Construct target: if pnl > 0, the signal was correct → reinforce it.
+            # If pnl < 0, the opposite signal (or HOLD) would have been better.
+            pred_signal = signal_logits.argmax(-1).item()
+            if pnl > 0:
+                target = torch.tensor([pred_signal], device=signal_logits.device)
+            else:
+                # Penalise the predicted signal; nudge toward HOLD
+                target = torch.tensor([Signal.HOLD.value], device=signal_logits.device)
+
+            task_loss = torch.nn.functional.cross_entropy(signal_logits, target)
+            si_loss = self.si.penalty()
+            total_loss = task_loss + si_loss
+
+            total_loss.backward()
+            self.si.update()
+            self._si_optimizer.step()
+            self._online_batch_count += 1
+
+            # Periodically consolidate importance weights
+            if self._online_batch_count % self.si_config.consolidate_every == 0:
+                self.si.consolidate()
+                logger.info("SI consolidated at batch %d", self._online_batch_count)
+
+            self.model.eval()
+            logger.info(
+                "Online learn: task_loss=%.4f si_loss=%.4f pnl=%.2f",
+                task_loss.item(), si_loss.item(), pnl,
+            )
+        except Exception as e:
+            self.model.eval()
+            logger.warning("Online learning failed: %s", e)
 
     # ── Trailing stop ─────────────────────────────────────────────────────
 
@@ -775,7 +882,7 @@ class StreamingEngine:
             if candle.high > self.open_trade_peak:
                 self.open_trade_peak = candle.high
             entry = self.open_trade_entry or candle.close
-            initial_risk = entry - (self.open_trade_sl or entry)
+            initial_risk = entry - (self.open_trade_initial_sl or entry)
             if initial_risk <= 0:
                 return
             trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
@@ -798,7 +905,7 @@ class StreamingEngine:
             if candle.low < self.open_trade_peak or self.open_trade_peak == 0:
                 self.open_trade_peak = candle.low
             entry = self.open_trade_entry or candle.close
-            initial_risk = (self.open_trade_sl or entry) - entry
+            initial_risk = (self.open_trade_initial_sl or entry) - entry
             if initial_risk <= 0:
                 return
             trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)

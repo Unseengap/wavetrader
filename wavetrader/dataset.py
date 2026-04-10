@@ -278,7 +278,7 @@ class MTFForexDataset(Dataset):
             pad = sl
         pad = pad.iloc[-lookback:]
 
-        return {
+        tensors = {
             "ohlcv": torch.tensor(
                 pad[["open_norm", "high_norm", "low_norm", "close_norm", "volume_norm"]].values,
                 dtype=torch.float32,
@@ -296,6 +296,15 @@ class MTFForexDataset(Dataset):
                 dtype=torch.float32,
             ),
         }
+
+        # Regime context: session flags + ATR percentile (was missing from MTF pipeline)
+        regime_cols = ["session_tokyo", "session_london", "session_newyork", "atr_pct"]
+        if all(c in pad.columns for c in regime_cols):
+            tensors["regime"] = torch.tensor(
+                pad[regime_cols].values, dtype=torch.float32,
+            )
+
+        return tensors
 
     def __len__(self) -> int:
         return len(self.valid_indices)
