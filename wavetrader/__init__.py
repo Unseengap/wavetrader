@@ -6,14 +6,12 @@ Public API
 Models
     FluxSignal          Single-timeframe model
     WaveTraderMTF       Multi-timeframe model
-    WaveTraderMTFv2     Multi-timeframe model v2 (ATR labels, FiLM gating)
     FluxSignalFabric    Multi-pair + regime-gated model (Wave Fabric)
     CrossPairAttention  Cross-pair attention layer
 
 Configs
     SignalConfig    Single-TF hyper-parameters
     MTFConfig       Multi-TF hyper-parameters
-    MTFv2Config     Multi-TF v2 hyper-parameters
     BacktestConfig  Backtesting parameters
     ResonanceConfig Episodic memory buffer configuration
     SIConfig        Synaptic Intelligence continual learning config
@@ -33,14 +31,12 @@ Data
 Datasets
     ForexDataset             Single-TF PyTorch Dataset
     MTFForexDataset          Multi-TF PyTorch Dataset
-    MTFForexDatasetV2        Multi-TF v2 Dataset (ADX, augmentation)
     mtf_collate_fn           DataLoader collate function for MTF
     ResonanceBuffer          Episodic memory: rolling window of salient wave states
 
 Training
     train_model              FluxSignal training loop
     train_mtf_model          WaveTraderMTF training loop
-    train_mtf_model_v2       WaveTraderMTFv2 training loop (focal loss, warmup)
     walk_forward_splits      Purged time-series CV splits
     SynapticIntelligence     Online continual learning (SI)
 
@@ -61,7 +57,7 @@ Utils
 """
 
 from .backtest import BacktestEngine, run_backtest, walk_forward_backtest
-from .config import BacktestConfig, MTFConfig, MTFv2Config, MTFv3Config, ResonanceConfig, SIConfig, SignalConfig
+from .config import BacktestConfig, MTFConfig, ResonanceConfig, SIConfig, SignalConfig
 from .data import (
     detect_gaps,
     filter_flash_crashes,
@@ -76,20 +72,16 @@ from .data import (
     preprocess_pipeline,
     verify_session_alignment,
 )
-from .dataset import ForexDataset, MTFForexDataset, MTFForexDatasetV2, MTFForexDatasetV3, ResonanceBuffer, mtf_collate_fn
-from .encoders import CandlePatternEncoder, RegimeGatedLayer
+from .dataset import ForexDataset, MTFForexDataset, ResonanceBuffer, mtf_collate_fn
+from .encoders import RegimeGatedLayer
 from .indicators import calculate_adx, calculate_hurst
-from .model import CrossPairAttention, FluxSignal, FluxSignalFabric, WaveTraderMTF, WaveTraderMTFv2, WaveTraderMTFv3
+from .model import CrossPairAttention, FluxSignal, FluxSignalFabric, WaveTraderMTF
 from .training import (
     FocalLoss,
     SignalLoss,
-    SignalLossV2,
-    SignalLossV3,
     SynapticIntelligence,
     train_model,
     train_mtf_model,
-    train_mtf_model_v2,
-    train_mtf_model_v3,
     walk_forward_splits,
 )
 from .types import BacktestResults, Signal, StructureType, Trade, TradeSignal

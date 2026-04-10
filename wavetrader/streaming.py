@@ -31,7 +31,7 @@ import torch
 from torch import Tensor
 
 from .config import BacktestConfig, MTFConfig, ResonanceConfig, DEFAULT_RISK_SCALING
-from .dataset import ResonanceBuffer, prepare_features, prepare_features_v3
+from .dataset import ResonanceBuffer, prepare_features
 from .model import WaveTraderMTF
 from .monitor import Monitor, MonitorConfig
 from .oanda import Candle, OANDAClient, OANDAConfig, tf_to_granularity
@@ -433,8 +433,6 @@ class StreamingEngine:
 
     def _build_batch(self) -> Optional[Dict[str, Dict[str, Tensor]]]:
         """Build multi-timeframe feature tensors from candle history."""
-        from .config import MTFv3Config
-        is_v3 = isinstance(self.config, MTFv3Config)
         batch: Dict[str, Dict[str, Tensor]] = {}
 
         for tf in self.config.timeframes:
@@ -444,18 +442,8 @@ class StreamingEngine:
             df = self._history[tf].copy()
             lookback = self.config.lookbacks[tf]
 
-            # Prepare features using the appropriate pipeline
             try:
-                if is_v3:
-                    extra = getattr(self.config, 'extra_features', [])
-                    prepared = prepare_features_v3(
-                        df, lookahead=1, pair=self.pair,
-                        extra_features=extra,
-                        is_4h=(tf == "4h"),
-                        is_daily=(tf == "1d"),
-                    )
-                else:
-                    prepared = prepare_features(df, lookahead=1, pair=self.pair)
+                prepared = prepare_features(df, lookahead=1, pair=self.pair)
             except Exception as e:
                 logger.warning("Feature prep failed for %s: %s", tf, e)
                 return None
@@ -498,44 +486,6 @@ class StreamingEngine:
                 "volume": volume.to(self.device),
             }
 
-            # V3: add pattern features for 4H and trend features for daily
-            if is_v3 and tf == "4h":
-                pattern_cols = [
-                    "reversal_type", "pattern_strength", "pattern_low_norm",
-                    "pattern_high_norm", "candle2_recovery", "candle3_confirmation",
-                    "candle3_dip_recovery", "trend_reversal_score",
-                ]
-                pcols = [c for c in pattern_cols if c in padded.columns]
-                if pcols:
-                    tf_batch["pattern"] = torch.tensor(
-                        padded[pcols].values, dtype=torch.float32,
-                    ).unsqueeze(0).to(self.device)
-                else:
-                    tf_batch["pattern"] = torch.zeros(1, lookback, 8, device=self.device)
-
-            if is_v3 and tf == "1d":
-                trend_cols = ["trend_direction", "trend_strength"]
-                tcols = [c for c in trend_cols if c in padded.columns]
-                if tcols:
-                    tf_batch["trend"] = torch.tensor(
-                        padded[tcols].values, dtype=torch.float32,
-                    ).unsqueeze(0).to(self.device)
-                else:
-                    tf_batch["trend"] = torch.zeros(1, lookback, 2, device=self.device)
-
-            # V3/V2: add regime features
-            if is_v3:
-                regime_cols = ["session_tokyo", "session_london", "session_newyork", "atr_pct"]
-                if "adx_norm" in padded.columns:
-                    regime_cols.append("adx_norm")
-                if "dow_sin" in padded.columns:
-                    regime_cols.extend(["dow_sin", "dow_cos"])
-                rcols = [c for c in regime_cols if c in padded.columns]
-                if rcols:
-                    tf_batch["regime"] = torch.tensor(
-                        padded[rcols].values, dtype=torch.float32,
-                    ).unsqueeze(0).to(self.device)
-
             batch[tf] = tf_batch
 
         return batch
@@ -544,9 +494,6 @@ class StreamingEngine:
 
     def _infer(self, batch: Dict[str, Dict[str, Tensor]], current_price: float) -> TradeSignal:
         """Run model inference and return a TradeSignal."""
-        from .config import MTFv3Config
-        is_v3 = isinstance(self.config, MTFv3Config)
-
         self.model.eval()
         with torch.no_grad():
             out = self.model.forward(batch)
@@ -559,22 +506,10 @@ class StreamingEngine:
             pip = _PIP_SIZE.get(self.pair, 0.01)
             _rs = DEFAULT_RISK_SCALING
 
-            if is_v3:
-                # V3: 2 risk params (SL + trailing), no TP
-                pat_conf = out.get("pattern_confidence", torch.tensor([1.0])).item()
-                confidence = base_conf * (0.5 + 0.5 * alignment) * (0.5 + 0.5 * pat_conf)
-                sl_pips = _rs.sl_pips(float(risk[0].item()))
-                tp_pips = 0.0
-                default_trail = getattr(self.config, 'default_trailing_pct', 0.4)
-                trailing = max(_rs.trailing_pct(float(risk[1].item())), default_trail)
-                exit_mode = "opposite_signal"
-            else:
-                # V1/V2: 3 risk params (SL + TP + trailing)
-                confidence = base_conf * (0.5 + 0.5 * alignment)
-                sl_pips = _rs.sl_pips(float(risk[0].item()))
-                tp_pips = _rs.tp_pips(float(risk[1].item()))
-                trailing = _rs.trailing_pct(float(risk[2].item()))
-                exit_mode = "tp_sl"
+            confidence = base_conf * (0.5 + 0.5 * alignment)
+            sl_pips = _rs.sl_pips(float(risk[0].item()))
+            tp_pips = _rs.tp_pips(float(risk[1].item()))
+            trailing = _rs.trailing_pct(float(risk[2].item()))
 
             sig = Signal(signal_idx)
             entry = current_price
@@ -587,7 +522,6 @@ class StreamingEngine:
                 take_profit=tp_pips,
                 trailing_stop_pct=trailing,
                 timestamp=datetime.now(timezone.utc),
-                exit_mode=exit_mode,
             )
 
     # ── Execution ─────────────────────────────────────────────────────────

@@ -61,10 +61,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--mode",
-        choices=["train", "backtest", "demo", "mtf", "mtf_v2", "mtf_v3", "preprocess", "live",
+        choices=["train", "backtest", "demo", "mtf", "preprocess", "live",
                  "add-user", "remove-user", "list-users", "user-status"],
         default="demo",
-        help="train | backtest | demo | mtf | mtf_v2 | mtf_v3 | preprocess | live | add-user | remove-user | list-users | user-status",
+        help="train | backtest | demo | mtf | preprocess | live | add-user | remove-user | list-users | user-status",
     )
     p.add_argument("--pair",      default="GBP/JPY",  help="Forex pair")
     p.add_argument("--timeframe", default="15min",    help="Entry timeframe")
@@ -225,131 +225,6 @@ def run_mtf(args: argparse.Namespace, device: torch.device) -> None:
     if os.path.exists(ckpt):
         model.load_state_dict(torch.load(ckpt, weights_only=True))
         print(f"Loaded checkpoint: {ckpt}")
-
-
-def run_mtf_v2(args: argparse.Namespace, device: torch.device) -> None:
-    print("\n" + "=" * 70)
-    print("WAVETRADER  MULTI-TIMEFRAME v2")
-    print("=" * 70)
-
-    config = wt.MTFv2Config(pair=args.pair, epochs=args.epochs)
-
-    print(f"\nLoading multi-timeframe data for {args.pair} from '{args.data}'...")
-    mtf_data = wt.load_mtf_data(args.pair, data_dir=args.data)
-    for tf, df in mtf_data.items():
-        print(f"  {tf}: {len(df):,} bars")
-
-    train_data, val_data, test_data = wt.chronological_split_mtf(mtf_data)
-
-    model = wt.WaveTraderMTFv2(config)
-    print(f"\nModel parameters: {model.count_parameters():,}")
-
-    ckpt = args.checkpoint or "wavetrader_mtf_v2_best.pt"
-
-    train_ds = wt.MTFForexDatasetV2(train_data, config, pair=args.pair, augment=True)
-    val_ds   = wt.MTFForexDatasetV2(val_data,   config, pair=args.pair, augment=False)
-    train_loader = tud.DataLoader(
-        train_ds, batch_size=config.batch_size,
-        shuffle=True, collate_fn=wt.mtf_collate_fn,
-    )
-    val_loader = tud.DataLoader(
-        val_ds, batch_size=config.batch_size,
-        collate_fn=wt.mtf_collate_fn,
-    )
-    history = wt.train_mtf_model_v2(
-        model, train_loader, val_loader, config, device, checkpoint=ckpt
-    )
-    print(f"\nBest directional F1: {max(history.get('dir_f1', [0])):.4f}")
-
-    if os.path.exists(ckpt):
-        model.load_state_dict(torch.load(ckpt, weights_only=True))
-        print(f"Loaded checkpoint: {ckpt}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Multi-timeframe v3 mode — 4H Reversal Swing Model
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_mtf_v3(args: argparse.Namespace, device: torch.device) -> None:
-    print("\n" + "=" * 70)
-    print("WAVETRADER  MULTI-TIMEFRAME v3 — 4H REVERSAL SWING")
-    print("=" * 70)
-
-    config = wt.MTFv3Config(pair=args.pair, epochs=args.epochs)
-
-    print(f"\nStrategy: 3-candle reversal on 4H + Daily trend + 1H entry")
-    print(f"Exit Mode: opposite_signal (no TP, trailing SL at {config.default_trailing_pct:.0%})")
-
-    # V3 uses pre-split processed_data if available, otherwise raw data/
-    proc_dir = os.path.join(os.path.dirname(args.data.rstrip("/")), "processed_data")
-    if os.path.isdir(os.path.join(proc_dir, "train")):
-        print(f"\nLoading pre-split data for {args.pair} from '{proc_dir}'...")
-        train_data = wt.load_mtf_data(args.pair, data_dir=os.path.join(proc_dir, "train"), timeframes=config.timeframes)
-        val_data   = wt.load_mtf_data(args.pair, data_dir=os.path.join(proc_dir, "val"),   timeframes=config.timeframes)
-        test_data  = wt.load_mtf_data(args.pair, data_dir=os.path.join(proc_dir, "test"),  timeframes=config.timeframes)
-        for tf in config.timeframes:
-            print(f"  {tf}: train={len(train_data[tf]):,}  val={len(val_data[tf]):,}  test={len(test_data[tf]):,}")
-    else:
-        print(f"\nLoading multi-timeframe data for {args.pair} from '{args.data}'...")
-        mtf_data = wt.load_mtf_data(args.pair, data_dir=args.data, timeframes=config.timeframes)
-        for tf, df in mtf_data.items():
-            print(f"  {tf}: {len(df):,} bars")
-        train_data, val_data, test_data = wt.chronological_split_mtf(
-            mtf_data, ref_timeframe=config.timeframes[0],
-        )
-
-    model = wt.WaveTraderMTFv3(config)
-    print(f"\nModel parameters: {model.count_parameters():,}")
-
-    ckpt = args.checkpoint or "wavetrader_mtf_v3_best.pt"
-
-    print("\nPreparing datasets...")
-    train_ds = wt.MTFForexDatasetV3(
-        train_data, config, lookahead=config.label_lookahead, pair=args.pair, augment=True,
-    )
-    val_ds = wt.MTFForexDatasetV3(
-        val_data, config, lookahead=config.label_lookahead, pair=args.pair, augment=False,
-    )
-    train_loader = tud.DataLoader(
-        train_ds, batch_size=config.batch_size,
-        shuffle=True, collate_fn=wt.mtf_collate_fn,
-    )
-    val_loader = tud.DataLoader(
-        val_ds, batch_size=config.batch_size,
-        collate_fn=wt.mtf_collate_fn,
-    )
-    history = wt.train_mtf_model_v3(
-        model, train_loader, val_loader, config, device, checkpoint=ckpt,
-    )
-    print(f"\nBest directional F1: {max(history.get('dir_f1', [0])):.4f}")
-
-    if os.path.exists(ckpt):
-        model.load_state_dict(torch.load(ckpt, weights_only=True))
-        print(f"Loaded checkpoint: {ckpt}")
-
-    # Run backtest on test data
-    print("\nRunning V3 backtest on test data...")
-    bt_config = wt.BacktestConfig(initial_balance=args.balance)
-    results = wt.run_backtest(model, test_data, config, bt_config, device)
-    wt.print_equity_chart(results.equity_curve)
-
-    # Print exit reason breakdown
-    if results.trades:
-        reasons = {}
-        for t in results.trades:
-            reasons[t.exit_reason] = reasons.get(t.exit_reason, 0) + 1
-        print("\nExit Reason Breakdown:")
-        for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
-            print(f"  {reason:20s}: {count}")
-
-    print("\n" + "=" * 70)
-    roi = (results.final_balance / args.balance - 1) * 100
-    print(f"Starting Capital : ${args.balance:,.2f}")
-    print(f"Ending Capital   : ${results.final_balance:,.2f}")
-    print(f"Net P&L          : ${results.total_pnl:,.2f}")
-    print(f"ROI              : {roi:.1f}%")
-    print(f"Max Drawdown     : {results.max_drawdown:.1%}")
-    print("=" * 70)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -698,10 +573,6 @@ def main() -> None:
         run_preprocess(args)
     elif args.mode == "mtf":
         run_mtf(args, device)
-    elif args.mode == "mtf_v2":
-        run_mtf_v2(args, device)
-    elif args.mode == "mtf_v3":
-        run_mtf_v3(args, device)
     elif args.mode == "live":
         run_live(args, device)
     elif args.mode == "add-user":
