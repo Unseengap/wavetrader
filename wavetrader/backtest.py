@@ -55,6 +55,7 @@ class BacktestEngine:
         self.max_drawdown                   = 0.0
         self._recent_ranges: deque = deque(maxlen=20)
         self._bars_in_trade: int = 0
+        self._min_trail_abs: float = DEFAULT_RISK_SCALING.min_trail_pips * 0.01  # absolute price
 
     # ── Circuit breakers ───────────────────────────────────────────────
 
@@ -166,6 +167,7 @@ class BacktestEngine:
                 if t.trailing_stop_pct > 0:
                     initial_risk = t.entry_price - t.stop_loss
                     trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
+                    trail_distance = max(trail_distance, self._min_trail_abs)
                     new_sl = t.highest_price - trail_distance
                     if new_sl > t.current_sl:
                         t.current_sl = new_sl
@@ -182,6 +184,7 @@ class BacktestEngine:
                 if t.trailing_stop_pct > 0:
                     initial_risk = t.stop_loss - t.entry_price
                     trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
+                    trail_distance = max(trail_distance, self._min_trail_abs)
                     new_sl = t.lowest_price + trail_distance
                     if new_sl < t.current_sl:
                         t.current_sl = new_sl

@@ -100,6 +100,7 @@ class BacktestConfig:
     commission_per_lot: float = 7.0     # USD per standard lot round-trip
     pip_value: float = 6.5              # USD per pip per std lot (GBP/JPY approx)
     min_confidence: float = 0.60        # Skip signals below this confidence
+    cooldown_bars: int = 2              # Minimum bars between new trades (avoids churn)
 
     # Circuit breakers
     atr_halt_multiplier: float = 3.0    # Halt if current range > multiplier × 20-bar mean
@@ -137,7 +138,8 @@ class RiskScaling:
     sl_floor:   float = 10.0
     tp_mult:    float = 100.0   # TP pips = risk[1] * tp_mult + tp_floor
     tp_floor:   float = 20.0
-    trail_mult: float = 0.5     # trailing % = risk[2] * trail_mult
+    trail_mult: float = 0.2     # trailing % = risk[2] * trail_mult (reduced from 0.5)
+    min_trail_pips: float = 20.0  # Minimum trail distance in pips (floor)
 
     def sl_pips(self, raw: float) -> float:
         return raw * self.sl_mult + self.sl_floor

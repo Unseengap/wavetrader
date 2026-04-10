@@ -142,6 +142,9 @@ class StreamingEngine:
         self.live_trade_sl: Optional[float] = None
         self.live_trade_tp: Optional[float] = None
 
+        # Trade cooldown (bars since last close)
+        self._bars_since_close: int = self.bt_config.cooldown_bars  # allow first trade immediately
+
         # Circuit breaker state
         self._recent_ranges: deque = deque(maxlen=20)
 
@@ -346,6 +349,7 @@ class StreamingEngine:
     def _process_bar(self, candle: Candle) -> None:
         """Process a new entry-TF bar: update history, run inference, manage positions."""
         self.bar_count += 1
+        self._bars_since_close += 1
         self._last_bar_time = candle.timestamp
         entry_tf = self.config.entry_timeframe
 
@@ -547,6 +551,14 @@ class StreamingEngine:
             )
             return
 
+        # Cooldown: wait N bars after last trade close before opening new
+        if self.open_trade_id is None and self._bars_since_close < self.bt_config.cooldown_bars:
+            logger.info(
+                "Cooldown: %d/%d bars since last close — skipping %s",
+                self._bars_since_close, self.bt_config.cooldown_bars, signal.signal.name,
+            )
+            return
+
         # Same direction as existing position → hold, don't duplicate
         if self.open_trade_id and self.open_trade_direction == signal.signal:
             logger.info("Already %s — holding position %s", signal.signal.name, self.open_trade_id)
@@ -737,28 +749,45 @@ class StreamingEngine:
         self.live_trade_sl = None
         self.live_trade_tp = None
 
+        # Reset cooldown counter
+        self._bars_since_close = 0
+
         # Update equity tracking
         self._update_equity()
 
     # ── Trailing stop ─────────────────────────────────────────────────────
 
     def _update_trailing_stop(self, candle: Candle) -> None:
-        """Update trailing stop on open position."""
+        """Update trailing stop on open position.
+
+        Uses the same formula as backtest.py: trail_distance = initial_risk * (1 - pct),
+        floored by min_trail_pips so the stop never gets tighter than that distance
+        from the peak price.
+        """
         if not self.open_trade_id or self.open_trade_trailing_pct <= 0:
             return
+
+        from wavetrader.config import DEFAULT_RISK_SCALING
+        pip = _PIP_SIZE.get(self.pair, 0.01)
+        min_trail = DEFAULT_RISK_SCALING.min_trail_pips * pip
 
         if self.open_trade_direction == Signal.BUY:
             if candle.high > self.open_trade_peak:
                 self.open_trade_peak = candle.high
-                move = self.open_trade_peak - (self.open_trade_entry or candle.close)
-                new_sl = (self.open_trade_entry or candle.close) + move * self.open_trade_trailing_pct
-                if self.open_trade_sl and new_sl > self.open_trade_sl:
-                    self.open_trade_sl = new_sl
-                    if self.open_trade_id:
-                        self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
-                    if self.live_trade_id and self.oanda_live:
-                        self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
-                    logger.info("Trailing SL updated to %.3f", new_sl)
+            entry = self.open_trade_entry or candle.close
+            initial_risk = entry - (self.open_trade_sl or entry)
+            if initial_risk <= 0:
+                return
+            trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
+            trail_distance = max(trail_distance, min_trail)
+            new_sl = self.open_trade_peak - trail_distance
+            if self.open_trade_sl and new_sl > self.open_trade_sl:
+                self.open_trade_sl = new_sl
+                if self.open_trade_id:
+                    self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                if self.live_trade_id and self.oanda_live:
+                    self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
 
             # Check if SL hit
             if self.open_trade_sl and candle.low <= self.open_trade_sl:
@@ -767,17 +796,21 @@ class StreamingEngine:
 
         else:  # SELL
             if candle.low < self.open_trade_peak or self.open_trade_peak == 0:
-                if self.open_trade_peak == 0 or candle.low < self.open_trade_peak:
-                    self.open_trade_peak = candle.low
-                move = (self.open_trade_entry or candle.close) - self.open_trade_peak
-                new_sl = (self.open_trade_entry or candle.close) - move * self.open_trade_trailing_pct
-                if self.open_trade_sl and new_sl < self.open_trade_sl:
-                    self.open_trade_sl = new_sl
-                    if self.open_trade_id:
-                        self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
-                    if self.live_trade_id and self.oanda_live:
-                        self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
-                    logger.info("Trailing SL updated to %.3f", new_sl)
+                self.open_trade_peak = candle.low
+            entry = self.open_trade_entry or candle.close
+            initial_risk = (self.open_trade_sl or entry) - entry
+            if initial_risk <= 0:
+                return
+            trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
+            trail_distance = max(trail_distance, min_trail)
+            new_sl = self.open_trade_peak + trail_distance
+            if self.open_trade_sl and new_sl < self.open_trade_sl:
+                self.open_trade_sl = new_sl
+                if self.open_trade_id:
+                    self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                if self.live_trade_id and self.oanda_live:
+                    self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
 
             # Check if SL hit
             if self.open_trade_sl and candle.high >= self.open_trade_sl:

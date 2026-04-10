@@ -7,6 +7,7 @@
 
 let chartManager = null;
 let currentResults = null;
+let replayController = null;
 
 // ── Initialization is handled by backtest-init.js ───────────────────────────
 
@@ -167,6 +168,9 @@ function updateDashboard(results) {
         renderTradeLog(results.trades);
     }
 
+    // Initialize backtest replay controller if candle data is available
+    initReplayController(results);
+
     // Show the analytics area
     document.querySelectorAll('.wt-tab-pane').forEach(p => p.classList.remove('active'));
     const firstPane = document.querySelector('.wt-tab-pane');
@@ -174,6 +178,38 @@ function updateDashboard(results) {
     document.querySelectorAll('.wt-tab').forEach(t => t.classList.remove('active'));
     const firstTab = document.querySelector('.wt-tab');
     if (firstTab) firstTab.classList.add('active');
+}
+
+
+// ── Replay Controller ───────────────────────────────────────────────────────
+
+function initReplayController(results) {
+    // Destroy previous replay if exists
+    if (replayController) {
+        replayController.destroy();
+        replayController = null;
+    }
+
+    const candles = results.candles;
+    const trades = results.trades;
+    if (!candles || candles.length === 0 || !chartManager) {
+        // Hide toolbar if no candle data
+        const toolbar = document.getElementById('replay-toolbar');
+        if (toolbar) toolbar.style.display = 'none';
+        return;
+    }
+
+    const initialBalance = results.config?.initial_balance || 25000;
+    replayController = new BacktestReplayController(chartManager, candles, trades, initialBalance);
+    replayController.bindUI();
+
+    // Show the toolbar (hidden by default, user clicks Replay to start)
+    const toolbar = document.getElementById('replay-toolbar');
+    if (toolbar) toolbar.style.display = '';
+
+    // The replay-play button already exists in the HTML toolbar.
+    // Show a toast hinting at the feature.
+    showToast('Replay ready — press ▶ below the chart to animate the backtest', 'info');
 }
 
 

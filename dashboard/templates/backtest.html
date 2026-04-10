@@ -227,6 +227,67 @@
             <div id="priceChart"></div>
         </div>
 
+        <!-- ─── Replay Playback Toolbar ─────────────────────────────────── -->
+        <div class="replay-toolbar" id="replay-toolbar" style="display:none">
+            <div class="replay-row replay-controls-row">
+                <!-- Transport controls -->
+                <div class="replay-transport">
+                    <button class="replay-btn" id="replay-start" title="Go to start (Home)">
+                        <i class="bi bi-skip-start-fill"></i>
+                    </button>
+                    <button class="replay-btn" id="replay-step-back" title="Step back (←)">
+                        <i class="bi bi-skip-backward-fill"></i>
+                    </button>
+                    <button class="replay-btn replay-btn-play" id="replay-play" title="Play (Space)">
+                        <i class="bi bi-play-fill"></i>
+                    </button>
+                    <button class="replay-btn" id="replay-step-fwd" title="Step forward (→)">
+                        <i class="bi bi-skip-forward-fill"></i>
+                    </button>
+                    <button class="replay-btn" id="replay-end" title="Go to end (End)">
+                        <i class="bi bi-skip-end-fill"></i>
+                    </button>
+                </div>
+
+                <!-- Speed selector -->
+                <div class="replay-speed-group">
+                    <button class="replay-speed-btn" data-speed="0.5">0.5×</button>
+                    <button class="replay-speed-btn active" data-speed="1">1×</button>
+                    <button class="replay-speed-btn" data-speed="2">2×</button>
+                    <button class="replay-speed-btn" data-speed="5">5×</button>
+                    <button class="replay-speed-btn" data-speed="10">10×</button>
+                    <button class="replay-speed-btn" data-speed="50">50×</button>
+                </div>
+
+                <!-- Stats -->
+                <div class="replay-stats">
+                    <span class="replay-stat">
+                        <i class="bi bi-bar-chart-steps"></i>
+                        <span id="replay-trade-counter">0 / 0 trades</span>
+                    </span>
+                    <span class="replay-stat">
+                        <i class="bi bi-wallet2"></i>
+                        <span id="replay-equity">$25,000.00</span>
+                    </span>
+                    <span class="replay-stat">
+                        <i class="bi bi-graph-up-arrow"></i>
+                        <span id="replay-pnl" class="replay-pnl-value">+$0.00</span>
+                    </span>
+                </div>
+            </div>
+
+            <div class="replay-row replay-scrubber-row">
+                <span class="replay-time" id="replay-time">—</span>
+                <div class="replay-scrubber-wrap">
+                    <div class="replay-bar-bg">
+                        <div class="replay-bar-fill" id="replay-bar"></div>
+                    </div>
+                    <input type="range" class="replay-scrubber" id="replay-scrubber" min="0" max="0" value="0">
+                </div>
+                <span class="replay-bar-counter" id="replay-bar-counter">Bar 0 / 0</span>
+            </div>
+        </div>
+
         <!-- ─── Drag Handle ─────────────────────────────────────────────── -->
         <div class="wt-drag-handle" id="drag-handle" title="Drag to resize · Double-click to toggle">
             <div class="wt-drag-handle-bar"></div>
@@ -465,6 +526,7 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/market-sessions.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart-manager.js') }}"></script>
+<script src="{{ url_for('static', filename='js/backtest-replay.js') }}"></script>
 <script src="{{ url_for('static', filename='js/analytics-charts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/trade-log.js') }}"></script>
 <script src="{{ url_for('static', filename='js/backtest-history.js') }}"></script>

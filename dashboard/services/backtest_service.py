@@ -413,12 +413,52 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
         step = len(equity) // 5000
         equity = equity[::step]
 
+    # Build candle array for replay (entry timeframe only)
+    replay_candles = []
+    entry_df = df_dict.get(entry_tf)
+    if entry_df is not None:
+        _df = entry_df.copy()
+        _df.columns = [c.strip().lower() for c in _df.columns]
+        # Normalize column names
+        col_map = {}
+        for base in ("open", "high", "low", "close"):
+            if f"{base}_mid" in _df.columns and base not in _df.columns:
+                col_map[f"{base}_mid"] = base
+        if col_map:
+            _df = _df.rename(columns=col_map)
+        if "date" not in _df.columns:
+            for alias in ("datetime", "timestamp", "time"):
+                if alias in _df.columns:
+                    _df = _df.rename(columns={alias: "date"})
+                    break
+        if _df.index.name in ("timestamp", "date", "datetime"):
+            _df = _df.reset_index()
+            if "date" not in _df.columns:
+                for alias in ("datetime", "timestamp", "time"):
+                    if alias in _df.columns:
+                        _df = _df.rename(columns={alias: "date"})
+                        break
+        if "date" in _df.columns:
+            _df["date"] = pd.to_datetime(_df["date"], errors="coerce")
+            _df = _df.dropna(subset=["date"]).sort_values("date")
+            for _, row in _df.iterrows():
+                replay_candles.append({
+                    "time": int(row["date"].timestamp()),
+                    "open": round(float(row["open"]), 5),
+                    "high": round(float(row["high"]), 5),
+                    "low": round(float(row["low"]), 5),
+                    "close": round(float(row["close"]), 5),
+                    "volume": float(row.get("volume", 0)),
+                })
+    logger.info("Replay candles: %d bars for %s", len(replay_candles), entry_tf)
+
     run_id = str(uuid.uuid4())[:8]
 
     return {
         "run_id": run_id,
         "elapsed_seconds": elapsed,
         "config": cfg,
+        "candles": replay_candles,
         "metrics": {
             "total_trades": results.total_trades,
             "winning_trades": results.winning_trades,

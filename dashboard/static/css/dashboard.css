@@ -1480,3 +1480,228 @@ body {
     word-break: break-all;
     color: #c9d1d9;
 }
+
+/* ── Replay Playback Toolbar ────────────────────────────────────────────── */
+
+.replay-toolbar {
+    background: var(--wt-bg-secondary, #161b22);
+    border-top: 1px solid var(--wt-border, #30363d);
+    border-bottom: 1px solid var(--wt-border, #30363d);
+    padding: 6px 12px;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.replay-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.replay-controls-row {
+    margin-bottom: 4px;
+}
+
+/* Transport buttons */
+.replay-transport {
+    display: flex;
+    gap: 4px;
+}
+
+.replay-btn {
+    background: transparent;
+    border: 1px solid var(--wt-border, #30363d);
+    color: var(--wt-text-muted, #8b949e);
+    border-radius: 4px;
+    width: 30px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.15s;
+}
+
+.replay-btn:hover {
+    color: #e6edf3;
+    border-color: var(--wt-blue, #58a6ff);
+    background: rgba(88, 166, 255, 0.08);
+}
+
+.replay-btn-play {
+    width: 36px;
+    height: 32px;
+    font-size: 16px;
+    background: rgba(63, 185, 80, 0.12);
+    border-color: rgba(63, 185, 80, 0.3);
+    color: #3fb950;
+}
+
+.replay-btn-play:hover {
+    background: rgba(63, 185, 80, 0.22);
+    border-color: #3fb950;
+    box-shadow: 0 0 8px rgba(63, 185, 80, 0.25);
+}
+
+/* Speed buttons */
+.replay-speed-group {
+    display: flex;
+    gap: 2px;
+    margin-left: 8px;
+    border: 1px solid var(--wt-border, #30363d);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.replay-speed-btn {
+    background: transparent;
+    border: none;
+    color: var(--wt-text-muted, #8b949e);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 7px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.replay-speed-btn:hover {
+    color: #e6edf3;
+    background: rgba(88, 166, 255, 0.08);
+}
+
+.replay-speed-btn.active {
+    color: #58a6ff;
+    background: rgba(88, 166, 255, 0.15);
+}
+
+/* Stats */
+.replay-stats {
+    display: flex;
+    gap: 16px;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--wt-text-muted, #8b949e);
+}
+
+.replay-stat {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.replay-stat i {
+    font-size: 11px;
+    opacity: 0.6;
+}
+
+.replay-stat span:last-child {
+    color: #e6edf3;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.replay-pnl-value.positive {
+    color: #3fb950 !important;
+}
+
+.replay-pnl-value.negative {
+    color: #f85149 !important;
+}
+
+/* Scrubber row */
+.replay-scrubber-row {
+    gap: 8px;
+}
+
+.replay-time {
+    font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: var(--wt-text-muted, #8b949e);
+    min-width: 120px;
+    white-space: nowrap;
+}
+
+.replay-bar-counter {
+    font-size: 10px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: var(--wt-text-muted, #8b949e);
+    min-width: 90px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.replay-scrubber-wrap {
+    flex: 1;
+    position: relative;
+    height: 18px;
+    display: flex;
+    align-items: center;
+}
+
+.replay-bar-bg {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: rgba(48, 54, 61, 0.6);
+    border-radius: 2px;
+    pointer-events: none;
+}
+
+.replay-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #3fb950, #58a6ff);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.08s linear;
+}
+
+.replay-scrubber {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    z-index: 1;
+    margin: 0;
+}
+
+.replay-scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #58a6ff;
+    border: 2px solid #0d1117;
+    box-shadow: 0 0 4px rgba(88, 166, 255, 0.4);
+    cursor: pointer;
+    transition: transform 0.1s;
+}
+
+.replay-scrubber::-webkit-slider-thumb:hover {
+    transform: scale(1.3);
+    box-shadow: 0 0 8px rgba(88, 166, 255, 0.6);
+}
+
+.replay-scrubber::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #58a6ff;
+    border: 2px solid #0d1117;
+    cursor: pointer;
+}
+
+.replay-scrubber::-webkit-slider-runnable-track {
+    height: 4px;
+    background: transparent;
+}
+
+.replay-scrubber::-moz-range-track {
+    height: 4px;
+    background: transparent;
+}
