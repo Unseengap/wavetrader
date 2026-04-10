@@ -141,8 +141,8 @@ class LiveService:
         self._error_msg: str = ""
 
         # ── Auto-trade state (always on — no toggle) ─────────────────────
-        self._min_confidence: float = float(os.environ.get("MIN_CONFIDENCE", "0.30"))
-        self._risk_per_trade: float = float(os.environ.get("RISK_PER_TRADE", "0.01"))
+        self._min_confidence: float = float(os.environ.get("MIN_CONFIDENCE", "0.65"))
+        self._risk_per_trade: float = float(os.environ.get("RISK_PER_TRADE", "0.10"))
         self._trade_log: List[dict] = []  # record of executed trades
         self._signal_history: List[dict] = []  # last N signals for diagnostics
 
