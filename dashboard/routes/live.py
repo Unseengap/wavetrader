@@ -85,6 +85,13 @@ def get_trades():
     return jsonify({"trades": svc.get_open_trades()})
 
 
+@live_bp.route("/orders", methods=["GET"])
+def get_orders():
+    """Fetch pending orders from OANDA."""
+    svc = get_live_service()
+    return jsonify({"orders": svc.get_pending_orders()})
+
+
 # ── Auto-Trade Status (always on) ─────────────────────────────────────────
 
 @live_bp.route("/auto-trade", methods=["GET"])

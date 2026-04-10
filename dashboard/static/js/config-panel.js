@@ -1,39 +1,14 @@
 /**
  * WaveTrader Config Panel & Dashboard Controller
  * Handles config form, backtest execution, sidebar toggles,
- * drag handle, top-level tabs, and state management.
+ * drag handle, and state management.
+ * Shared between backtest page and backtest-init.js.
  */
 
 let chartManager = null;
 let currentResults = null;
 
-// ── Initialization ──────────────────────────────────────────────────────────
-
-document.addEventListener('DOMContentLoaded', async () => {
-    // Init TradingView chart
-    chartManager = new ChartManager('priceChart');
-
-    // Restore layout state
-    restoreLayoutState();
-
-    // Load defaults into form
-    await loadDefaults();
-
-    // Load candles for initial pair/tf
-    const pair = document.getElementById('cfg-pair').value;
-    const tf = document.getElementById('nav-tf-select').value || '1h';
-    await chartManager.loadCandles(pair, tf);
-
-    // Try loading cached results
-    await loadCachedResults();
-
-    // Set up event listeners
-    setupEventListeners();
-    setupSidebarToggles();
-    setupDragHandle();
-    setupTopTabs();
-    setupKeyboardShortcuts();
-});
+// ── Initialization is handled by backtest-init.js ───────────────────────────
 
 
 // ── Load defaults from API ──────────────────────────────────────────────────
@@ -179,10 +154,9 @@ function updateDashboard(results) {
     // Update metrics sidebar
     updateMetrics(results.metrics);
 
-    // Update TradingView chart with trade markers
+    // Update TradingView chart with trade markers (SL/TP shown on click only)
     if (chartManager && results.trades) {
         chartManager.setTradeMarkers(results.trades);
-        chartManager.setPriceLines(results.trades);
     }
 
     // Update analytics charts
@@ -194,10 +168,12 @@ function updateDashboard(results) {
     }
 
     // Show the analytics area
-    document.querySelectorAll('#top-tab-backtest-hub .wt-tab-pane').forEach(p => p.classList.remove('active'));
-    document.querySelector('#top-tab-backtest-hub .wt-tab-pane').classList.add('active');
-    document.querySelectorAll('#top-tab-backtest-hub .wt-tab').forEach(t => t.classList.remove('active'));
-    document.querySelector('#top-tab-backtest-hub .wt-tab').classList.add('active');
+    document.querySelectorAll('.wt-tab-pane').forEach(p => p.classList.remove('active'));
+    const firstPane = document.querySelector('.wt-tab-pane');
+    if (firstPane) firstPane.classList.add('active');
+    document.querySelectorAll('.wt-tab').forEach(t => t.classList.remove('active'));
+    const firstTab = document.querySelector('.wt-tab');
+    if (firstTab) firstTab.classList.add('active');
 }
 
 
@@ -235,92 +211,7 @@ function updateMetrics(m) {
 }
 
 
-// ── Event Listeners ─────────────────────────────────────────────────────────
-
-function setupEventListeners() {
-    // Run backtest button
-    document.getElementById('btn-run-backtest').addEventListener('click', runBacktest);
-
-    // Reset to defaults
-    document.getElementById('btn-reset-defaults').addEventListener('click', loadDefaults);
-
-    // Timeframe buttons
-    document.querySelectorAll('.wt-tf-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            document.querySelectorAll('.wt-tf-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            const tf = btn.dataset.tf;
-            const pair = document.getElementById('nav-pair-select').value;
-            document.getElementById('nav-tf-select').value = tf;
-
-            if (typeof liveMode !== 'undefined' && liveMode) {
-                await loadLiveCandles(pair, tf);
-            } else {
-                await chartManager.loadCandles(pair, tf);
-
-                // Re-apply trade markers if we have results
-                if (currentResults && currentResults.trades) {
-                    chartManager.setTradeMarkers(currentResults.trades);
-                    chartManager.setPriceLines(currentResults.trades);
-                }
-            }
-        });
-    });
-
-    // Nav pair change
-    document.getElementById('nav-pair-select').addEventListener('change', async (e) => {
-        const pair = e.target.value;
-        document.getElementById('cfg-pair').value = pair;
-        const tf = document.getElementById('nav-tf-select').value || '1h';
-
-        if (typeof liveMode !== 'undefined' && liveMode) {
-            await loadLiveCandles(pair, tf);
-        } else {
-            await chartManager.loadCandles(pair, tf);
-        }
-    });
-
-    // Config pair change → sync nav
-    document.getElementById('cfg-pair').addEventListener('change', (e) => {
-        document.getElementById('nav-pair-select').value = e.target.value;
-    });
-
-    // Analytics tabs (backtest hub sub-tabs)
-    document.querySelectorAll('#top-tab-backtest-hub .wt-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            const target = tab.dataset.tab;
-            document.querySelectorAll('#top-tab-backtest-hub .wt-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            document.querySelectorAll('#top-tab-backtest-hub .wt-tab-pane').forEach(p => p.classList.remove('active'));
-            document.getElementById(`tab-${target}`).classList.add('active');
-
-            // Trigger Plotly resize for newly visible charts
-            setTimeout(() => {
-                document.querySelectorAll(`#tab-${target} .plotly-chart`).forEach(el => {
-                    if (el.querySelector('.js-plotly-plot')) {
-                        Plotly.Plots.resize(el.querySelector('.js-plotly-plot'));
-                    }
-                });
-            }, 50);
-        });
-    });
-
-    // Live hub sub-tabs
-    document.querySelectorAll('.wt-live-tabs .wt-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            const target = tab.dataset.liveTab;
-            document.querySelectorAll('.wt-live-tabs .wt-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            document.querySelectorAll('.wt-live-tab-pane').forEach(p => p.classList.remove('active'));
-            document.getElementById(`tab-${target}`).classList.add('active');
-        });
-    });
-
-    // Range input live displays
-    document.querySelectorAll('.wt-field input[type="range"]').forEach(input => {
-        input.addEventListener('input', updateRangeDisplays);
-    });
-}
+// ── Event listeners are set up by backtest-init.js (setupBacktestEventListeners) ──
 
 
 // ── Utility ─────────────────────────────────────────────────────────────────
@@ -527,29 +418,7 @@ function applyChartRatio(ratio) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Top-Level Tabs (Backtest Results / Live Trading)
-// ═══════════════════════════════════════════════════════════════════════════
-
-function setupTopTabs() {
-    document.querySelectorAll('.wt-top-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            const target = tab.dataset.topTab;
-            document.querySelectorAll('.wt-top-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            document.querySelectorAll('.wt-top-tab-pane').forEach(p => p.classList.remove('active'));
-            document.getElementById(`top-tab-${target}`).classList.add('active');
-        });
-    });
-}
-
-function switchToTopTab(tabName) {
-    document.querySelectorAll('.wt-top-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.wt-top-tab-pane').forEach(p => p.classList.remove('active'));
-    const tab = document.querySelector(`.wt-top-tab[data-top-tab="${tabName}"]`);
-    if (tab) tab.classList.add('active');
-    const pane = document.getElementById(`top-tab-${tabName}`);
-    if (pane) pane.classList.add('active');
-}
+// Top-level tabs removed — Live and Backtest are now separate pages.
 
 
 // ═══════════════════════════════════════════════════════════════════════════

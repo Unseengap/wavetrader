@@ -1,111 +1,17 @@
 /**
  * WaveTrader Live Panel
  * Handles live OANDA data streaming via SSE, chart updates,
- * account display, and model signal rendering.
+ * account display, model signal rendering, trade markers, and
+ * table-based trade history.
+ *
+ * Used by the standalone live page (live.html + live-init.js).
  */
 
-let liveMode = false;
+let liveMode = true;  // Always true on the live page
 let eventSource = null;
 let liveReconnectTimer = null;
 let lastCandleTime = 0;  // Guard against out-of-order candle updates
-
-// ── Toggle Handler ──────────────────────────────────────────────────────────
-
-document.addEventListener('DOMContentLoaded', () => {
-    const toggle = document.getElementById('live-toggle');
-    if (toggle) {
-        toggle.addEventListener('change', (e) => {
-            if (e.target.checked) {
-                enableLiveMode();
-            } else {
-                disableLiveMode();
-            }
-        });
-    }
-});
-
-async function enableLiveMode() {
-    liveMode = true;
-
-    // Update UI
-    document.getElementById('live-label').textContent = 'Live';
-    document.getElementById('live-label').style.color = 'var(--wt-green)';
-    document.getElementById('connection-status').innerHTML =
-        '<i class="bi bi-circle-fill" style="color:var(--wt-yellow);font-size:6px;vertical-align:middle"></i> Connecting…';
-
-    // Show split sidebar: performance (top) + live feed (bottom)
-    document.getElementById('live-panel').style.display = 'block';
-    document.getElementById('sidebar-drag-handle').style.display = 'block';
-    document.getElementById('backtest-panel').style.display = 'block';
-    activateSidebarSplit();
-
-    // Switch to Live Trading hub tab
-    if (typeof switchToTopTab === 'function') {
-        switchToTopTab('live-hub');
-    }
-
-    const pair = document.getElementById('nav-pair-select').value || 'GBP/JPY';
-    const tf = document.getElementById('nav-tf-select').value || '15min';
-
-    // 1. Start the server-side stream
-    try {
-        await fetch('/api/live/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pair, timeframe: '15min' }),
-        });
-    } catch (err) {
-        showToast('Failed to start live stream: ' + err.message, 'error');
-    }
-
-    // 2. Load initial candles from OANDA for the chart
-    await loadLiveCandles(pair, tf);
-
-    // 3. Connect SSE
-    connectSSE();
-
-    // 4. Load account
-    await refreshAccount();
-
-    // 5. Load trade history from broker
-    await loadTradeHistory();
-
-    showToast('Live mode enabled — streaming from OANDA', 'success');
-}
-
-function disableLiveMode() {
-    liveMode = false;
-
-    // Disconnect SSE
-    disconnectSSE();
-
-    // Update UI
-    document.getElementById('live-label').textContent = 'Historical';
-    document.getElementById('live-label').style.color = 'var(--wt-text-muted)';
-    document.getElementById('live-panel').style.display = 'none';
-    document.getElementById('sidebar-drag-handle').style.display = 'none';
-    document.getElementById('backtest-panel').style.display = 'block';
-    deactivateSidebarSplit();
-    document.getElementById('connection-status').innerHTML =
-        '<i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i> Dashboard Active';
-
-    // Switch back to Backtest hub tab
-    if (typeof switchToTopTab === 'function') {
-        switchToTopTab('backtest-hub');
-    }
-
-    // Reload historical candles
-    const pair = document.getElementById('nav-pair-select').value || 'GBP/JPY';
-    const tf = document.getElementById('nav-tf-select').value || '1h';
-    if (chartManager) {
-        chartManager.loadCandles(pair, tf);
-    }
-
-    // Stop server-side stream
-    fetch('/api/live/stop', { method: 'POST' }).catch(() => {});
-
-    showToast('Switched to historical mode', 'info');
-}
+let _liveTradeHistory = [];  // Cached for filtering
 
 // ── Load OANDA Candles ──────────────────────────────────────────────────────
 
@@ -113,40 +19,68 @@ async function loadLiveCandles(pair, tf) {
     if (!chartManager) return;
 
     try {
-        const params = new URLSearchParams({ pair, tf, count: '500' });
+        // First load historical data from local CSV files to backfill the chart
+        const histParams = new URLSearchParams({ pair, tf, limit: '5000' });
+        let allCandles = [];
+        let allVolumes = [];
+
+        try {
+            const histResp = await fetch(`/api/data/candles?${histParams}`);
+            const histData = await histResp.json();
+            if (histData.candles && histData.candles.length > 0) {
+                allCandles = histData.candles.map(c => ({
+                    time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+                }));
+                allVolumes = histData.candles.map(c => ({
+                    time: c.time, value: c.volume,
+                    color: c.close >= c.open ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)',
+                }));
+            }
+        } catch (histErr) {
+            console.warn('Could not load historical backfill:', histErr);
+        }
+
+        // Then load recent live candles from OANDA (up to 5000)
+        const params = new URLSearchParams({ pair, tf, count: '5000' });
         const resp = await fetch(`/api/live/candles?${params}`);
         const data = await resp.json();
 
-        if (!data.candles || data.candles.length === 0) {
-            showToast('No live candles returned from OANDA', 'error');
+        if (data.candles && data.candles.length > 0) {
+            const liveCandles = data.candles.map(c => ({
+                time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+            }));
+            const liveVolumes = data.candles.map(c => ({
+                time: c.time, value: c.volume,
+                color: c.close >= c.open ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)',
+            }));
+
+            if (allCandles.length > 0) {
+                // Merge: use historical data up to where live data starts, then live data
+                const liveStart = liveCandles[0].time;
+                const histOnly = allCandles.filter(c => c.time < liveStart);
+                const histVolOnly = allVolumes.filter(v => v.time < liveStart);
+                allCandles = [...histOnly, ...liveCandles];
+                allVolumes = [...histVolOnly, ...liveVolumes];
+            } else {
+                allCandles = liveCandles;
+                allVolumes = liveVolumes;
+            }
+        }
+
+        if (allCandles.length === 0) {
+            if (typeof showToast === 'function') showToast('No candles available', 'error');
             return;
         }
 
-        const candles = data.candles.map(c => ({
-            time: c.time,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-        }));
-
-        const volumes = data.candles.map(c => ({
-            time: c.time,
-            value: c.volume,
-            color: c.close >= c.open
-                ? 'rgba(63, 185, 80, 0.3)'
-                : 'rgba(248, 81, 73, 0.3)',
-        }));
-
-        chartManager.candleSeries.setData(candles);
-        chartManager.volumeSeries.setData(volumes);
+        chartManager.candleSeries.setData(allCandles);
+        chartManager.volumeSeries.setData(allVolumes);
         chartManager.chart.timeScale().scrollToRealTime();
+        // Reset markers for fresh candle data
+        chartManager.markers = [];
         // Reset candle guard to the latest candle time
-        if (candles.length > 0) {
-            lastCandleTime = candles[candles.length - 1].time;
-        }
+        lastCandleTime = allCandles[allCandles.length - 1].time;
     } catch (err) {
-        showToast('Failed to load live candles: ' + err.message, 'error');
+        if (typeof showToast === 'function') showToast('Failed to load live candles: ' + err.message, 'error');
     }
 }
 
@@ -158,40 +92,35 @@ function connectSSE() {
     eventSource = new EventSource('/api/live/stream');
 
     eventSource.onopen = () => {
-        document.getElementById('connection-status').innerHTML =
-            '<i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i> Live Connected';
-        document.getElementById('live-status-dot').className = 'wt-status-dot online';
+        setText('connection-status',  '');
+        const el = document.getElementById('connection-status');
+        if (el) el.innerHTML = '<i class="bi bi-circle-fill" style="color:var(--wt-green);font-size:6px;vertical-align:middle"></i> Live Connected';
+        const dot = document.getElementById('live-status-dot');
+        if (dot) dot.className = 'wt-status-dot online';
     };
 
     eventSource.onerror = () => {
-        document.getElementById('connection-status').innerHTML =
-            '<i class="bi bi-circle-fill" style="color:var(--wt-red);font-size:6px;vertical-align:middle"></i> Reconnecting…';
-        document.getElementById('live-status-dot').className = 'wt-status-dot offline';
+        const el = document.getElementById('connection-status');
+        if (el) el.innerHTML = '<i class="bi bi-circle-fill" style="color:var(--wt-red);font-size:6px;vertical-align:middle"></i> Reconnecting…';
+        const dot = document.getElementById('live-status-dot');
+        if (dot) dot.className = 'wt-status-dot offline';
     };
 
     // ── Candle updates ────────────────────────────────────────────────
     eventSource.addEventListener('candle', (e) => {
-        if (!chartManager || !liveMode) return;
+        if (!chartManager) return;
         try {
             const c = JSON.parse(e.data);
             const t = typeof c.time === 'number' ? c.time : Math.floor(new Date(c.time).getTime() / 1000);
             if (!t || isNaN(t)) return;
-            // Skip candles older than the last one we rendered
             if (t < lastCandleTime) return;
             lastCandleTime = t;
             chartManager.candleSeries.update({
-                time: t,
-                open: c.open,
-                high: c.high,
-                low: c.low,
-                close: c.close,
+                time: t, open: c.open, high: c.high, low: c.low, close: c.close,
             });
             chartManager.volumeSeries.update({
-                time: t,
-                value: c.volume,
-                color: c.close >= c.open
-                    ? 'rgba(63, 185, 80, 0.3)'
-                    : 'rgba(248, 81, 73, 0.3)',
+                time: t, value: c.volume,
+                color: c.close >= c.open ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)',
             });
         } catch (err) {
             console.error('candle parse error:', err);
@@ -200,16 +129,12 @@ function connectSSE() {
 
     // ── Price updates ─────────────────────────────────────────────────
     eventSource.addEventListener('price', (e) => {
-        if (!liveMode) return;
         try {
             const p = JSON.parse(e.data);
             setText('live-bid', p.bid.toFixed(3));
             setText('live-ask', p.ask.toFixed(3));
-
-            const spreadPips = (p.spread / 0.01).toFixed(1); // JPY pair
+            const spreadPips = (p.spread / 0.01).toFixed(1);
             setText('live-spread', spreadPips + ' pips');
-
-            // Mirror to sidebar
             setText('live-bid-sidebar', p.bid.toFixed(3));
             setText('live-ask-sidebar', p.ask.toFixed(3));
             setText('live-spread-sidebar', spreadPips + ' pips');
@@ -220,25 +145,23 @@ function connectSSE() {
 
     // ── Model signal ──────────────────────────────────────────────────
     eventSource.addEventListener('signal', (e) => {
-        if (!liveMode) return;
         try {
             const s = JSON.parse(e.data);
             const badge = document.getElementById('live-signal-badge');
-            badge.textContent = s.signal;
-            badge.className = 'wt-signal-badge ' + s.signal.toLowerCase();
+            if (badge) {
+                badge.textContent = s.signal;
+                badge.className = 'wt-signal-badge ' + s.signal.toLowerCase();
+                badge.style.animation = 'none';
+                badge.offsetHeight;
+                badge.style.animation = 'signal-flash 0.6s ease';
+            }
 
             setText('live-confidence', (s.confidence * 100).toFixed(1) + '%');
             setText('live-alignment', (s.alignment * 100).toFixed(1) + '%');
             setText('live-sl', s.sl_pips.toFixed(1));
             setText('live-tp', s.tp_pips.toFixed(1));
-
             const ts = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '—';
             setText('live-signal-time', 'Last signal: ' + ts);
-
-            // Flash the badge
-            badge.style.animation = 'none';
-            badge.offsetHeight; // reflow
-            badge.style.animation = 'signal-flash 0.6s ease';
 
             // Mirror to sidebar
             const sidebarBadge = document.getElementById('live-signal-badge-sidebar');
@@ -249,10 +172,16 @@ function connectSSE() {
             setText('live-confidence-sidebar', (s.confidence * 100).toFixed(1) + '%');
             setText('live-alignment-sidebar', (s.alignment * 100).toFixed(1) + '%');
 
-            showToast(`Signal: ${s.signal} (${(s.confidence * 100).toFixed(0)}% conf)`,
-                s.signal === 'BUY' ? 'success' : s.signal === 'SELL' ? 'error' : 'info');
+            if (typeof showToast === 'function') {
+                showToast(`Signal: ${s.signal} (${(s.confidence * 100).toFixed(0)}% conf)`,
+                    s.signal === 'BUY' ? 'success' : s.signal === 'SELL' ? 'error' : 'info');
+            }
 
-            // Log signal to Signals tab
+            // Add signal marker on chart
+            if (chartManager && s.signal !== 'HOLD') {
+                chartManager.addSignalMarker(s);
+            }
+
             appendSignalLog(s);
         } catch (err) {
             console.error('signal parse error:', err);
@@ -261,7 +190,6 @@ function connectSSE() {
 
     // ── Account updates ───────────────────────────────────────────────
     eventSource.addEventListener('account', (e) => {
-        if (!liveMode) return;
         try {
             const a = JSON.parse(e.data);
             if (a.error) return;
@@ -299,7 +227,6 @@ function connectSSE() {
 
     // ── Open trades ───────────────────────────────────────────────────
     eventSource.addEventListener('trades', (e) => {
-        if (!liveMode) return;
         try {
             const data = JSON.parse(e.data);
             renderOpenPositions(data.trades || []);
@@ -312,7 +239,7 @@ function connectSSE() {
     eventSource.addEventListener('status', (e) => {
         try {
             const s = JSON.parse(e.data);
-            if (s.status === 'error') {
+            if (s.status === 'error' && typeof showToast === 'function') {
                 showToast('Stream error: ' + s.error, 'error');
             }
         } catch (err) {}
@@ -320,13 +247,18 @@ function connectSSE() {
 
     // ── Trade executed (auto-trade) ───────────────────────────────────
     eventSource.addEventListener('trade_executed', (e) => {
-        if (!liveMode) return;
         try {
             const t = JSON.parse(e.data);
-            appendTradeLog(t);
+            // Add entry marker on chart
+            if (chartManager) {
+                chartManager.addLiveTradeMarker(t);
+            }
+            appendSignalTradeLog(t);
             const accountLabel = t.account === 'live' ? 'LIVE' : 'Demo';
-            showToast(`Trade ${t.signal} ${t.pair} @ ${t.entry_price} (${accountLabel})`,
-                t.signal === 'BUY' ? 'success' : 'error');
+            if (typeof showToast === 'function') {
+                showToast(`Trade ${t.signal} ${t.pair} @ ${t.entry_price} (${accountLabel})`,
+                    t.signal === 'BUY' ? 'success' : 'error');
+            }
             refreshAccount();
             loadTradeHistory();
         } catch (err) {
@@ -336,11 +268,16 @@ function connectSSE() {
 
     // ── Trade closed ──────────────────────────────────────────────────
     eventSource.addEventListener('trade_closed', (e) => {
-        if (!liveMode) return;
         try {
             const t = JSON.parse(e.data);
+            // Add exit marker on chart
+            if (chartManager) {
+                chartManager.addLiveExitMarker(t);
+            }
             const accountLabel = t.account === 'live' ? 'LIVE' : 'Demo';
-            showToast(`Position closed (${accountLabel}): ${t.reason}`, 'info');
+            if (typeof showToast === 'function') {
+                showToast(`Position closed (${accountLabel}): ${t.reason}`, 'info');
+            }
             refreshAccount();
             loadTradeHistory();
         } catch (err) {}
@@ -365,7 +302,7 @@ async function refreshAccount() {
         const resp = await fetch('/api/live/account');
         const a = await resp.json();
         if (a.error) {
-            showToast('OANDA: ' + a.error, 'error');
+            if (typeof showToast === 'function') showToast('OANDA: ' + a.error, 'error');
             return;
         }
         setText('live-balance', '$' + a.balance.toLocaleString('en-US', { minimumFractionDigits: 2 }));
@@ -378,7 +315,7 @@ async function refreshAccount() {
             marketEl.style.color = a.market_open ? 'var(--wt-green)' : 'var(--wt-text-muted)';
         }
     } catch (err) {
-        showToast('Failed to load account: ' + err.message, 'error');
+        if (typeof showToast === 'function') showToast('Failed to load account: ' + err.message, 'error');
     }
 }
 
@@ -398,14 +335,18 @@ function renderOpenPositions(trades) {
         const dir = t.direction;
         const color = dir === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
         const pnlColor = t.unrealized_pnl >= 0 ? 'var(--wt-green)' : 'var(--wt-red)';
+        const accountColor = t.account === 'live' ? 'var(--wt-green)' : '#58a6ff';
         html += `
             <div style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border)">
                 <div style="display:flex;justify-content:space-between">
-                    <span style="color:${color};font-weight:600">${dir}</span>
+                    <span>
+                        <span style="color:${color};font-weight:600">${dir}</span>
+                        <span style="color:${accountColor};font-size:0.65rem;margin-left:4px">${t.account ? t.account.toUpperCase() : ''}</span>
+                    </span>
                     <span style="color:${pnlColor}">${t.unrealized_pnl >= 0 ? '+' : ''}$${t.unrealized_pnl.toFixed(2)}</span>
                 </div>
                 <div style="color:var(--wt-text-muted);font-size:0.68rem">
-                    Entry: ${t.price.toFixed(3)} | SL: ${t.stop_loss ? t.stop_loss.toFixed(3) : '—'} | TP: ${t.take_profit ? t.take_profit.toFixed(3) : '—'}
+                    ${t.instrument || ''} @ ${t.price.toFixed(3)} | SL: ${t.stop_loss ? t.stop_loss.toFixed(3) : '—'} | TP: ${t.take_profit ? t.take_profit.toFixed(3) : '—'}
                 </div>
             </div>
         `;
@@ -413,51 +354,187 @@ function renderOpenPositions(trades) {
     container.innerHTML = html;
 }
 
-// ── Utility ─────────────────────────────────────────────────────────────────
+// ── Load & Render Orders ────────────────────────────────────────────────────
 
-function setText(id, text) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
+async function loadOrders() {
+    const container = document.getElementById('live-orders-list');
+    if (!container) return;
+
+    try {
+        const resp = await fetch('/api/live/orders');
+        const data = await resp.json();
+        const orders = data.orders || [];
+
+        if (orders.length === 0) {
+            container.innerHTML = '<div class="wt-empty-state" style="padding:0.5rem">No pending orders</div>';
+            return;
+        }
+
+        let html = '';
+        orders.forEach(o => {
+            const typeColor = o.type === 'LIMIT' ? '#58a6ff' : o.type === 'STOP' ? '#d29922' : 'var(--wt-text)';
+            html += `
+                <div style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border)">
+                    <div style="display:flex;justify-content:space-between">
+                        <span style="color:${typeColor};font-weight:600">${o.type}</span>
+                        <span style="color:var(--wt-text-muted);font-size:0.68rem">${o.instrument || ''}</span>
+                    </div>
+                    <div style="color:var(--wt-text-muted);font-size:0.68rem">
+                        Units: ${o.units} | Price: ${parseFloat(o.price || 0).toFixed(3)} | ${o.account ? o.account.toUpperCase() : ''}
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    } catch (err) {
+        console.error('loadOrders error:', err);
+    }
 }
 
-// ── Auto-Trade Status (always on — no toggle) ──────────────────────────────
+// ── Trade History (table-based, like backtest trade log) ────────────────────
 
-document.addEventListener('DOMContentLoaded', () => {
-    // Fetch auto-trade status to show demo/live badges
-    fetch('/api/live/auto-trade')
-        .then(r => r.json())
-        .then(data => {
-            const liveBadge = document.getElementById('auto-trade-live-badge');
-            if (liveBadge && data.live_active) {
-                liveBadge.style.display = 'inline';
-            }
-        })
-        .catch(() => {});
+async function loadTradeHistory() {
+    const body = document.getElementById('live-trade-log-body');
+    if (!body) return;
 
-    // Trade history filter buttons
-    document.querySelectorAll('.wt-history-filter').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.wt-history-filter').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            const filter = btn.dataset.filter;
-            document.querySelectorAll('.wt-history-entry').forEach(row => {
-                if (filter === 'all' || row.dataset.account === filter) {
-                    row.style.display = '';
-                } else {
-                    row.style.display = 'none';
-                }
+    try {
+        const resp = await fetch('/api/live/trade-history?count=100');
+        const data = await resp.json();
+        const trades = data.trades || [];
+        _liveTradeHistory = trades;
+
+        renderLiveTradeHistoryTable(trades);
+
+        // Plot historical trades as markers on the chart
+        if (chartManager && trades.length > 0) {
+            plotTradeHistoryMarkers(trades);
+        }
+    } catch (err) {
+        console.error('loadTradeHistory error:', err);
+    }
+}
+
+/**
+ * Plot entry/exit markers for all historical trades on the live chart.
+ */
+function plotTradeHistoryMarkers(trades) {
+    if (!chartManager) return;
+
+    trades.forEach(t => {
+        const isBuy = t.direction === 'BUY';
+
+        // Entry marker
+        if (t.open_time) {
+            const entryTs = Math.floor(new Date(t.open_time).getTime() / 1000);
+            chartManager.markers.push({
+                time: entryTs,
+                position: isBuy ? 'belowBar' : 'aboveBar',
+                color: isBuy ? '#3fb950' : '#f85149',
+                shape: isBuy ? 'arrowUp' : 'arrowDown',
+                text: isBuy ? 'BUY' : 'SELL',
+                size: 1,
             });
-        });
-    });
-});
+        }
 
-// ── Signal & Trade Logging ──────────────────────────────────────────────────
+        // Exit marker (only for closed trades)
+        if (t.close_time && t.state === 'CLOSED') {
+            const exitTs = Math.floor(new Date(t.close_time).getTime() / 1000);
+            const reason = t.reason || 'EXIT';
+            chartManager.markers.push({
+                time: exitTs,
+                position: 'aboveBar',
+                color: '#58a6ff',
+                shape: 'circle',
+                text: reason,
+                size: 1,
+            });
+        }
+    });
+
+    chartManager.markers.sort((a, b) => a.time - b.time);
+    chartManager.candleSeries.setMarkers(chartManager.markers);
+}
+
+function renderLiveTradeHistoryTable(trades) {
+    const body = document.getElementById('live-trade-log-body');
+    const countEl = document.getElementById('live-trade-log-count');
+    if (!body) return;
+
+    if (!trades || trades.length === 0) {
+        body.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--wt-text-muted);padding:2rem">No trade history yet</td></tr>';
+        if (countEl) countEl.textContent = '0 trades';
+        return;
+    }
+
+    if (countEl) countEl.textContent = `${trades.length} trades`;
+
+    // Compute running balance (trades arrive newest-first, process in chronological order)
+    const chronological = [...trades].reverse();
+    const balanceMap = new Map();
+    let runningBalance = 0;
+    chronological.forEach(t => {
+        const pl = parseFloat(t.realized_pl || 0);
+        runningBalance += pl;
+        balanceMap.set(t.trade_id, runningBalance);
+    });
+
+    let html = '';
+    trades.forEach((t, i) => {
+        const dir = t.direction || (parseFloat(t.units) > 0 ? 'BUY' : 'SELL');
+        const dirColor = dir === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
+        const pl = parseFloat(t.realized_pl || 0);
+        const plColor = pl >= 0 ? 'var(--wt-green)' : 'var(--wt-red)';
+        const plStr = pl >= 0 ? `+${pl.toFixed(2)}` : pl.toFixed(2);
+        const openTime = t.open_time ? new Date(t.open_time).toLocaleString() : '—';
+        const closeTime = t.close_time ? new Date(t.close_time).toLocaleString() : '—';
+        const entryPrice = parseFloat(t.price || 0).toFixed(3);
+        const exitPrice = t.close_price ? parseFloat(t.close_price).toFixed(3) : '—';
+        const sl = t.sl != null ? parseFloat(t.sl).toFixed(3) : '—';
+        const tp = t.tp != null ? parseFloat(t.tp).toFixed(3) : '—';
+        const units = Math.abs(parseFloat(t.units || 0));
+        const state = t.state === 'OPEN'
+            ? '<span style="color:var(--wt-yellow)">OPEN</span>'
+            : '<span style="color:var(--wt-text-muted)">CLOSED</span>';
+        const reason = t.reason || '—';
+        const bal = balanceMap.has(t.trade_id) ? balanceMap.get(t.trade_id).toFixed(2) : '—';
+        const accountColor = t.account === 'live' ? 'var(--wt-green)' : '#58a6ff';
+        const rowBg = pl > 0 ? 'rgba(63,185,80,0.04)' : pl < 0 ? 'rgba(248,81,73,0.04)' : '';
+
+        html += `<tr data-account="${t.account || ''}" style="background:${rowBg}">
+            <td>${i + 1}</td>
+            <td>${openTime}</td>
+            <td>${closeTime}</td>
+            <td style="color:${dirColor};font-weight:600">${dir}</td>
+            <td>${entryPrice}</td>
+            <td>${exitPrice}</td>
+            <td>${sl}</td>
+            <td>${tp}</td>
+            <td>${units}</td>
+            <td style="color:${plColor};font-weight:600">${plStr}</td>
+            <td>${reason}</td>
+            <td>${bal}</td>
+            <td>${state}</td>
+            <td style="color:${accountColor}">${(t.account || '').toUpperCase()}</td>
+        </tr>`;
+    });
+    body.innerHTML = html;
+}
+
+function filterLiveTradeHistory(filter) {
+    if (filter === 'all') {
+        renderLiveTradeHistoryTable(_liveTradeHistory);
+    } else {
+        const filtered = _liveTradeHistory.filter(t => t.account === filter);
+        renderLiveTradeHistoryTable(filtered);
+    }
+}
+
+// ── Signal & Trade Logging (Signals tab) ────────────────────────────────────
 
 function appendSignalLog(signal) {
     const log = document.getElementById('live-signals-log');
     if (!log) return;
 
-    // Clear empty state
     const empty = log.querySelector('.wt-empty-state');
     if (empty) empty.remove();
 
@@ -476,14 +553,13 @@ function appendSignalLog(signal) {
     `;
     log.insertAdjacentHTML('afterbegin', html);
 
-    // Keep only last 50 entries
     const entries = log.querySelectorAll('.wt-signal-log-entry');
     if (entries.length > 50) {
         for (let i = 50; i < entries.length; i++) entries[i].remove();
     }
 }
 
-function appendTradeLog(trade) {
+function appendSignalTradeLog(trade) {
     const log = document.getElementById('live-signals-log');
     if (!log) return;
 
@@ -506,140 +582,44 @@ function appendTradeLog(trade) {
     log.insertAdjacentHTML('afterbegin', html);
 }
 
-// ── Trade History from Broker ────────────────────────────────────────────────
+// ── Utility ─────────────────────────────────────────────────────────────────
 
-async function loadTradeHistory() {
-    const list = document.getElementById('trade-history-list');
-    if (!list) return;
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
 
-    try {
-        const resp = await fetch('/api/live/trade-history?count=50');
-        const data = await resp.json();
-        const trades = data.trades || [];
+// ── Navigate to Trade in Trade History ──────────────────────────────────
 
-        if (trades.length === 0) {
-            list.innerHTML = '<div class="wt-empty-state" style="padding:1rem"><p>No trade history yet</p></div>';
-            return;
-        }
+/**
+ * Called when a trade marker is clicked on the chart.
+ * Switches to the Trade History tab and highlights the row.
+ */
+function navigateToTradeHistory(tradeIndex) {
+    // Switch to Trade History tab
+    const histTab = document.querySelector('[data-live-tab="live-history"]');
+    if (histTab) {
+        document.querySelectorAll('.wt-live-tabs .wt-tab').forEach(t => t.classList.remove('active'));
+        histTab.classList.add('active');
+        document.querySelectorAll('.wt-live-tab-pane').forEach(p => p.classList.remove('active'));
+        const pane = document.getElementById('tab-live-history');
+        if (pane) pane.classList.add('active');
+    }
 
-        let html = '';
-        for (const t of trades) {
-            const dir = parseFloat(t.units) > 0 ? 'BUY' : 'SELL';
-            const dirColor = dir === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
-            const pl = parseFloat(t.realized_pl || 0);
-            const plColor = pl >= 0 ? 'var(--wt-green)' : 'var(--wt-red)';
-            const plStr = pl >= 0 ? `+${pl.toFixed(2)}` : pl.toFixed(2);
-            const accountBg = t.account === 'live' ? 'rgba(63,185,80,0.12)' : 'rgba(88,166,255,0.08)';
-            const accountColor = t.account === 'live' ? 'var(--wt-green)' : '#58a6ff';
-            const state = t.state === 'OPEN' ? '<span style="color:var(--wt-yellow)">OPEN</span>' : '<span style="color:var(--wt-text-muted)">CLOSED</span>';
-            const openTime = t.open_time ? new Date(t.open_time).toLocaleString() : '—';
+    // Highlight the trade row
+    const body = document.getElementById('live-trade-log-body');
+    if (!body) return;
+    const rows = body.querySelectorAll('tr');
+    rows.forEach(r => r.classList.remove('wt-trade-row-highlight'));
 
-            html += `
-                <div class="wt-history-entry" data-account="${t.account}" style="padding:0.4rem 0.5rem;border-bottom:1px solid var(--wt-border);font-size:0.75rem;background:${accountBg}">
-                    <div style="display:flex;justify-content:space-between;align-items:center">
-                        <span>
-                            <strong style="color:${dirColor}">${dir}</strong>
-                            <span style="color:${accountColor};font-size:0.65rem;margin-left:4px">${t.account.toUpperCase()}</span>
-                        </span>
-                        <span style="color:${plColor};font-weight:600">${plStr}</span>
-                    </div>
-                    <div style="color:var(--wt-text-muted);font-size:0.68rem;margin-top:2px">
-                        ${t.instrument} @ ${parseFloat(t.price).toFixed(3)} | ${state} | ${openTime}
-                    </div>
-                </div>
-            `;
-        }
-        list.innerHTML = html;
-    } catch (err) {
-        console.error('loadTradeHistory error:', err);
+    if (tradeIndex >= 0 && tradeIndex < rows.length) {
+        const row = rows[tradeIndex];
+        row.classList.add('wt-trade-row-highlight');
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Flash effect
+        setTimeout(() => row.classList.remove('wt-trade-row-highlight'), 3000);
     }
 }
 
-// ── Sidebar Split (Performance + Live Feed) ─────────────────────────────────
-
-let sidebarDragging = false;
-
-function activateSidebarSplit() {
-    const sidebar = document.getElementById('sidebar-right');
-    const top = document.getElementById('backtest-panel');
-    const handle = document.getElementById('sidebar-drag-handle');
-    const bottom = document.getElementById('live-panel');
-    if (!sidebar || !top || !handle || !bottom) return;
-
-    sidebar.classList.add('split-active');
-
-    // Restore saved ratio or default to 50%
-    const saved = localStorage.getItem('wt-sidebar-ratio');
-    const ratio = saved ? parseFloat(saved) : 0.5;
-    applySidebarRatio(ratio);
-}
-
-function deactivateSidebarSplit() {
-    const sidebar = document.getElementById('sidebar-right');
-    if (sidebar) sidebar.classList.remove('split-active');
-    const top = document.getElementById('backtest-panel');
-    if (top) { top.style.flex = ''; top.style.overflow = ''; }
-    const bottom = document.getElementById('live-panel');
-    if (bottom) { bottom.style.flex = ''; bottom.style.overflow = ''; }
-}
-
-function applySidebarRatio(ratio) {
-    const top = document.getElementById('backtest-panel');
-    const bottom = document.getElementById('live-panel');
-    if (!top || !bottom) return;
-    ratio = Math.max(0.2, Math.min(0.8, ratio));
-    top.style.flex = `0 0 ${ratio * 100}%`;
-    top.style.overflow = 'auto';
-    bottom.style.flex = `0 0 ${(1 - ratio) * 100 - 2}%`; // 2% for handle
-    bottom.style.overflow = 'auto';
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    const handle = document.getElementById('sidebar-drag-handle');
-    if (!handle) return;
-
-    handle.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        sidebarDragging = true;
-        document.body.style.cursor = 'row-resize';
-        document.body.style.userSelect = 'none';
-
-        const sidebar = document.getElementById('sidebar-right');
-        const startY = e.clientY;
-        const sidebarRect = sidebar.getBoundingClientRect();
-        const sidebarH = sidebarRect.height;
-        const top = document.getElementById('backtest-panel');
-        const startTopH = top.getBoundingClientRect().height;
-
-        function onMove(ev) {
-            if (!sidebarDragging) return;
-            const dy = ev.clientY - startY;
-            const newRatio = (startTopH + dy) / sidebarH;
-            applySidebarRatio(newRatio);
-        }
-
-        function onUp() {
-            sidebarDragging = false;
-            document.body.style.cursor = '';
-            document.body.style.userSelect = '';
-            document.removeEventListener('mousemove', onMove);
-            document.removeEventListener('mouseup', onUp);
-            // Save ratio
-            const top = document.getElementById('backtest-panel');
-            const sidebar = document.getElementById('sidebar-right');
-            if (top && sidebar) {
-                const ratio = top.getBoundingClientRect().height / sidebar.getBoundingClientRect().height;
-                localStorage.setItem('wt-sidebar-ratio', ratio.toFixed(3));
-            }
-        }
-
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
-    });
-
-    // Double-click to reset to 50/50
-    handle.addEventListener('dblclick', () => {
-        applySidebarRatio(0.5);
-        localStorage.setItem('wt-sidebar-ratio', '0.5');
-    });
-});
+// ── Footer Log Terminal ─────────────────────────────────────────────────
+// (Shared implementation in log-terminal.js — initLogTerminal() called from live-init.js)

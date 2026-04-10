@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+
+{% block title %}WaveTrader — Live Trading{% endblock %}
+
+{% block body %}
+<!-- Toast Container -->
+<div id="toast-container" class="wt-toast-container"></div>
+
+<!-- ═══ Navbar ══════════════════════════════════════════════════════════════ -->
+<nav class="wt-navbar">
+    <div class="wt-brand">
+        <i class="bi bi-activity"></i> WaveTrader
+    </div>
+
+    <!-- Page Navigation -->
+    <div class="wt-nav-links">
+        <a href="/live" class="wt-nav-link active"><i class="bi bi-broadcast"></i> Live</a>
+        <a href="/backtest" class="wt-nav-link"><i class="bi bi-bar-chart-line"></i> Backtest</a>
+    </div>
+
+    <!-- Pair Selector -->
+    <div class="wt-nav-controls">
+        <select id="nav-pair-select">
+            <option value="GBP/JPY">GBP/JPY</option>
+        </select>
+        <select id="nav-tf-select" style="display:none">
+            <option value="15min">15m</option>
+        </select>
+    </div>
+
+    <!-- Timeframe Buttons -->
+    <div class="wt-tf-group">
+        <button class="wt-tf-btn active" data-tf="15min">15m</button>
+        <button class="wt-tf-btn" data-tf="1h">1H</button>
+        <button class="wt-tf-btn" data-tf="4h">4H</button>
+        <button class="wt-tf-btn" data-tf="1d">1D</button>
+    </div>
+
+    <div style="flex:1"></div>
+
+    <!-- Market Sessions -->
+    <div class="wt-market-sessions" id="market-sessions">
+        <div class="wt-session" id="session-forex" title="Forex Market">
+            <span class="wt-session-dot" id="session-forex-dot"></span>
+            <span class="wt-session-label">Forex</span>
+        </div>
+        <div class="wt-session" id="session-sydney" title="Sydney (22:00–07:00 UTC)">
+            <span class="wt-session-dot" id="session-sydney-dot"></span>
+            <span class="wt-session-label">SYD</span>
+        </div>
+        <div class="wt-session" id="session-tokyo" title="Tokyo (00:00–09:00 UTC)">
+            <span class="wt-session-dot" id="session-tokyo-dot"></span>
+            <span class="wt-session-label">TYO</span>
+        </div>
+        <div class="wt-session" id="session-london" title="London (07:00–16:00 UTC)">
+            <span class="wt-session-dot" id="session-london-dot"></span>
+            <span class="wt-session-label">LDN</span>
+        </div>
+        <div class="wt-session" id="session-newyork" title="New York (12:00–21:00 UTC)">
+            <span class="wt-session-dot" id="session-newyork-dot"></span>
+            <span class="wt-session-label">NYC</span>
+        </div>
+    </div>
+
+    <!-- Status -->
+    <div id="connection-status" style="font-size:0.78rem;color:var(--wt-text-muted)">
+        <i class="bi bi-circle-fill" style="color:var(--wt-yellow);font-size:6px;vertical-align:middle"></i>
+        Connecting…
+    </div>
+
+    <!-- Right sidebar toggle -->
+    <button class="wt-sidebar-toggle" id="toggle-right-sidebar" title="Toggle live panel ]">
+        <i class="bi bi-layout-sidebar-inset-reverse"></i>
+    </button>
+</nav>
+
+<!-- ═══ Main Layout ════════════════════════════════════════════════════════ -->
+<div class="wt-layout wt-layout-live" id="wt-layout">
+
+    <!-- ─── Center: Charts + Central Panel ─────────────────────────────── -->
+    <div class="wt-main" id="wt-main">
+        <!-- Price Chart Legend -->
+        <div class="wt-legend">
+            <div class="wt-legend-item"><div class="wt-legend-dot buy"></div> Buy Entry</div>
+            <div class="wt-legend-item"><div class="wt-legend-dot sell"></div> Sell Entry</div>
+            <div class="wt-legend-item"><div class="wt-legend-dot signal"></div> Signal</div>
+        </div>
+
+        <!-- TradingView Price Chart -->
+        <div class="wt-chart-area" id="chart-area">
+            <div id="priceChart"></div>
+        </div>
+
+        <!-- ─── Drag Handle ─────────────────────────────────────────────── -->
+        <div class="wt-drag-handle" id="drag-handle" title="Drag to resize · Double-click to toggle">
+            <div class="wt-drag-handle-bar"></div>
+        </div>
+
+        <!-- ─── Central Panel (Live Trading Hub) ───────────────────────── -->
+        <div class="wt-central-panel" id="central-panel">
+            <!-- Sub-tabs -->
+            <div class="wt-tabs wt-live-tabs">
+                <button class="wt-tab active" data-live-tab="live-account">
+                    <i class="bi bi-bank"></i> Account
+                </button>
+                <button class="wt-tab" data-live-tab="live-trades">
+                    <i class="bi bi-arrow-left-right"></i> Trades
+                </button>
+                <button class="wt-tab" data-live-tab="live-history">
+                    <i class="bi bi-clock-history"></i> Trade History
+                </button>
+                <button class="wt-tab" data-live-tab="live-signals">
+                    <i class="bi bi-lightning-charge"></i> Signals
+                </button>
+            </div>
+
+            <div class="wt-analytics-area">
+                <!-- Account Tab -->
+                <div id="tab-live-account" class="wt-live-tab-pane active">
+                    <div class="wt-live-account-grid">
+                        <div class="wt-card">
+                            <div class="wt-card-header"><i class="bi bi-bank"></i> OANDA Account</div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Balance</span>
+                                <span class="wt-metric-value" id="live-balance">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">NAV</span>
+                                <span class="wt-metric-value" id="live-nav">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Unrealised P&L</span>
+                                <span class="wt-metric-value" id="live-unreal-pnl">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Open Trades</span>
+                                <span class="wt-metric-value" id="live-open-trades">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Market</span>
+                                <span class="wt-metric-value" id="live-market-status">—</span>
+                            </div>
+                        </div>
+                        <div class="wt-card">
+                            <div class="wt-card-header"><i class="bi bi-currency-exchange"></i> Price</div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Bid</span>
+                                <span class="wt-metric-value" id="live-bid" style="font-family:monospace">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Ask</span>
+                                <span class="wt-metric-value" id="live-ask" style="font-family:monospace">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Spread</span>
+                                <span class="wt-metric-value" id="live-spread">—</span>
+                            </div>
+                        </div>
+                        <div class="wt-card">
+                            <div class="wt-card-header"><i class="bi bi-lightning-charge"></i> Model Signal</div>
+                            <div style="text-align:center;padding:0.5rem 0">
+                                <div id="live-signal-badge" class="wt-signal-badge hold">HOLD</div>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">Confidence</span>
+                                <span class="wt-metric-value" id="live-confidence">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">TF Alignment</span>
+                                <span class="wt-metric-value" id="live-alignment">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">SL (pips)</span>
+                                <span class="wt-metric-value" id="live-sl">—</span>
+                            </div>
+                            <div class="wt-metric">
+                                <span class="wt-metric-label">TP (pips)</span>
+                                <span class="wt-metric-value" id="live-tp">—</span>
+                            </div>
+                            <div style="font-size:0.7rem;color:var(--wt-text-muted);padding:0.25rem 0.5rem" id="live-signal-time">—</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ Trades Tab (Positions + Orders sub-tabs) ═══════════ -->
+                <div id="tab-live-trades" class="wt-live-tab-pane">
+                    <!-- Sub-tabs inside Trades -->
+                    <div class="wt-subtabs">
+                        <button class="wt-subtab active" data-subtab="positions">
+                            <i class="bi bi-box-arrow-in-right"></i> Positions
+                        </button>
+                        <button class="wt-subtab" data-subtab="orders">
+                            <i class="bi bi-list-check"></i> Orders
+                        </button>
+                    </div>
+
+                    <!-- Positions sub-tab -->
+                    <div id="subtab-positions" class="wt-subtab-pane active">
+                        <div id="live-positions-list" style="font-size:0.8rem">
+                            <div class="wt-empty-state" style="padding:1rem">
+                                <p>No open positions</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Orders sub-tab -->
+                    <div id="subtab-orders" class="wt-subtab-pane">
+                        <div id="live-orders-list" style="font-size:0.8rem">
+                            <div class="wt-empty-state" style="padding:1rem">
+                                <p>No pending orders</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade History Tab (table-based like backtest trade log) -->
+                <div id="tab-live-history" class="wt-live-tab-pane">
+                    <div class="wt-trade-log-container">
+                        <div class="wt-trade-log-header">
+                            <span id="live-trade-log-count">0 trades</span>
+                            <div style="display:flex;gap:6px;align-items:center">
+                                <button class="wt-history-filter active" data-filter="all" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px;cursor:pointer">All</button>
+                                <button class="wt-history-filter" data-filter="demo" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px;cursor:pointer">Demo</button>
+                                <button class="wt-history-filter" data-filter="live" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px;cursor:pointer">Live</button>
+                                <input type="text" id="live-trade-log-search" class="wt-trade-log-search" placeholder="Filter trades…">
+                            </div>
+                        </div>
+                        <div class="wt-trade-log-table-wrap" id="live-trade-log-table-wrap">
+                            <table class="wt-trade-log-table">
+                                <thead>
+                                    <tr>
+                                        <th data-sort="index">#</th>
+                                        <th data-sort="open_time">Entry Time</th>
+                                        <th data-sort="close_time">Exit Time</th>
+                                        <th data-sort="direction">Dir</th>
+                                        <th data-sort="price">Entry</th>
+                                        <th data-sort="close_price">Exit</th>
+                                        <th data-sort="sl">SL</th>
+                                        <th data-sort="tp">TP</th>
+                                        <th data-sort="units">Size</th>
+                                        <th data-sort="realized_pl">P&L</th>
+                                        <th data-sort="reason">Reason</th>
+                                        <th data-sort="balance">Balance</th>
+                                        <th data-sort="state">State</th>
+                                        <th data-sort="account">Account</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="live-trade-log-body">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Signals Tab -->
+                <div id="tab-live-signals" class="wt-live-tab-pane">
+                    <div class="wt-auto-trade-bar">
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wt-green);animation:pulse 2s ease infinite"></span>
+                            <span style="font-size:0.78rem;color:var(--wt-green);font-weight:600">Auto-Trade Active</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;font-size:0.72rem;color:var(--wt-text-muted)">
+                            <span id="auto-trade-demo-badge" style="padding:1px 6px;border-radius:3px;background:rgba(88,166,255,0.15);color:#58a6ff">Demo</span>
+                            <span id="auto-trade-live-badge" style="padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--wt-green);display:none">Live</span>
+                        </div>
+                    </div>
+                    <div id="live-signals-log" class="wt-signals-log">
+                        <div class="wt-empty-state" style="padding:1rem">
+                            <p>Waiting for model signals…</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /central-panel -->
+    </div>
+
+    <!-- ─── Right Sidebar: Live Feed ───────────────────────────────────── -->
+    <div class="wt-sidebar-right" id="sidebar-right">
+        <div class="wt-sidebar-section">
+            <div class="wt-card-header">
+                <i class="bi bi-broadcast"></i> Live Feed
+                <span id="live-status-dot" class="wt-status-dot offline"></span>
+            </div>
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-lightning-charge"></i> Signal</div>
+                <div style="text-align:center;padding:0.35rem 0">
+                    <div id="live-signal-badge-sidebar" class="wt-signal-badge hold" style="font-size:0.85rem">HOLD</div>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Confidence</span>
+                    <span class="wt-metric-value" id="live-confidence-sidebar">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Alignment</span>
+                    <span class="wt-metric-value" id="live-alignment-sidebar">—</span>
+                </div>
+            </div>
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-bank"></i> Account</div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Balance</span>
+                    <span class="wt-metric-value" id="live-balance-sidebar">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">NAV</span>
+                    <span class="wt-metric-value" id="live-nav-sidebar">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Unrealised P&L</span>
+                    <span class="wt-metric-value" id="live-pnl-sidebar">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Open Trades</span>
+                    <span class="wt-metric-value" id="live-trades-sidebar">—</span>
+                </div>
+            </div>
+            <div class="wt-card">
+                <div class="wt-card-header"><i class="bi bi-currency-exchange"></i> Price</div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Bid</span>
+                    <span class="wt-metric-value" id="live-bid-sidebar" style="font-family:monospace">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Ask</span>
+                    <span class="wt-metric-value" id="live-ask-sidebar" style="font-family:monospace">—</span>
+                </div>
+                <div class="wt-metric">
+                    <span class="wt-metric-label">Spread</span>
+                    <span class="wt-metric-value" id="live-spread-sidebar">—</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Chart-Trade Tooltip Overlay ══════════════════════════════════════ -->
+<div id="chart-trade-tooltip" class="wt-chart-trade-tooltip" style="display:none"></div>
+
+<!-- ═══ Footer Log Terminal ═════════════════════════════════════════════ -->
+<div class="wt-log-terminal-bar" id="log-terminal-toggle">
+    <i class="bi bi-terminal"></i>
+    <span>Logs</span>
+    <span id="log-terminal-status" class="wt-log-status-dot disconnected"></span>
+    <span style="font-size:0.68rem;color:var(--wt-text-muted);margin-left:4px">(<span id="log-terminal-count">0</span>)</span>
+</div>
+
+<div class="wt-log-terminal-panel" id="log-terminal-panel">
+    <div class="wt-log-terminal-header">
+        <div style="display:flex;align-items:center;gap:8px">
+            <i class="bi bi-terminal" style="color:#58a6ff"></i>
+            <span style="font-weight:600;font-size:0.8rem">Signal & Trade Logs</span>
+            <span id="log-terminal-status-inner" class="wt-log-status-dot disconnected"></span>
+        </div>
+        <div style="display:flex;gap:4px">
+            <button class="wt-log-btn" id="log-terminal-clear" title="Clear logs"><i class="bi bi-trash"></i></button>
+            <button class="wt-log-btn" id="log-terminal-fullscreen" title="Toggle fullscreen"><i class="bi bi-arrows-fullscreen"></i></button>
+            <button class="wt-log-btn" id="log-terminal-close" title="Close"><i class="bi bi-x-lg"></i></button>
+        </div>
+    </div>
+    <div class="wt-log-terminal-content" id="log-terminal-content"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/market-sessions.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart-manager.js') }}"></script>
+<script src="{{ url_for('static', filename='js/log-terminal.js') }}"></script>
+<script src="{{ url_for('static', filename='js/live-panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/live-init.js') }}"></script>
+{% endblock %}

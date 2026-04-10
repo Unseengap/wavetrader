@@ -114,13 +114,65 @@ body {
     color: #fff;
 }
 
+/* ── Market Session Indicators ──────────────────────────────────────────── */
+
+.wt-market-sessions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-right: 12px;
+    padding: 0 10px;
+    border-left: 1px solid var(--wt-border);
+    border-right: 1px solid var(--wt-border);
+}
+
+.wt-session {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0.5;
+    transition: opacity 0.3s;
+}
+
+.wt-session.active {
+    opacity: 1;
+}
+
+.wt-session-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #484f58;
+    transition: background 0.3s, box-shadow 0.3s;
+}
+
+.wt-session-dot.open {
+    background: #3fb950;
+    box-shadow: 0 0 6px rgba(63, 185, 80, 0.5);
+}
+
+.wt-session-dot.closed {
+    background: #484f58;
+}
+
+.wt-session-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--wt-text-muted);
+    letter-spacing: 0.02em;
+}
+
+.wt-session.active .wt-session-label {
+    color: var(--wt-text);
+}
+
 /* ── Layout Grid ────────────────────────────────────────────────────────── */
 
 .wt-layout {
     display: grid;
     grid-template-columns: 300px 1fr 280px;
     grid-template-rows: 1fr;
-    height: calc(100vh - 52px);
+    height: calc(100vh - 80px);
     gap: 0;
     transition: grid-template-columns 0.3s ease;
 }
@@ -1179,4 +1231,252 @@ body {
 
 .wt-signals-log {
     font-size: 0.78rem;
+}
+
+/* ═══ Navigation Links ═══════════════════════════════════════════════════ */
+
+.wt-nav-links {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+}
+
+.wt-nav-link {
+    font-size: 0.82rem;
+    color: var(--wt-text-muted);
+    text-decoration: none;
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+}
+
+.wt-nav-link:hover {
+    background: rgba(88, 166, 255, 0.08);
+    color: var(--wt-text);
+}
+
+.wt-nav-link.active {
+    background: rgba(88, 166, 255, 0.12);
+    color: var(--wt-blue);
+    font-weight: 600;
+}
+
+.wt-nav-link i {
+    margin-right: 0.3rem;
+}
+
+/* ═══ Live Layout (no left sidebar) ══════════════════════════════════════ */
+
+.wt-layout-live {
+    grid-template-columns: 1fr 280px;
+}
+
+.wt-layout-live.right-collapsed {
+    grid-template-columns: 1fr 0;
+}
+
+/* ═══ Sub-tabs (inside Trades tab) ═══════════════════════════════════════ */
+
+.wt-subtabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--wt-border);
+    padding: 0 0.5rem;
+}
+
+.wt-subtab {
+    background: none;
+    border: none;
+    color: var(--wt-text-muted);
+    font-size: 0.75rem;
+    padding: 0.4rem 0.75rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.wt-subtab:hover {
+    color: var(--wt-text);
+}
+
+.wt-subtab.active {
+    color: var(--wt-blue);
+    border-bottom-color: var(--wt-blue);
+}
+
+.wt-subtab i {
+    margin-right: 0.3rem;
+}
+
+.wt-subtab-pane {
+    display: none;
+}
+
+.wt-subtab-pane.active {
+    display: block;
+}
+
+/* ═══ Signal marker legend dot ═══════════════════════════════════════════ */
+
+.wt-legend-dot.signal {
+    background: rgba(88, 166, 255, 0.5);
+}
+
+/* ═══ Trade Row Highlight (chart → trade history navigation) ════════════ */
+
+.wt-trade-row-highlight {
+    background: rgba(88, 166, 255, 0.15) !important;
+    outline: 1px solid rgba(88, 166, 255, 0.4);
+    animation: trade-row-flash 0.5s ease 2;
+}
+
+@keyframes trade-row-flash {
+    0%, 100% { background: rgba(88, 166, 255, 0.15); }
+    50% { background: rgba(88, 166, 255, 0.3); }
+}
+
+/* ═══ Footer Log Terminal ═══════════════════════════════════════════════ */
+
+.wt-log-terminal-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 28px;
+    background: #161b22;
+    border-top: 1px solid var(--wt-border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    cursor: pointer;
+    z-index: 100;
+    font-size: 0.75rem;
+    color: var(--wt-text-muted);
+    transition: background 0.15s;
+}
+
+.wt-log-terminal-bar:hover {
+    background: #1c2128;
+    color: var(--wt-text);
+}
+
+.wt-log-terminal-bar i {
+    font-size: 0.8rem;
+    color: #58a6ff;
+}
+
+.wt-log-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.wt-log-status-dot.connected {
+    background: #3fb950;
+}
+
+.wt-log-status-dot.disconnected {
+    background: #f85149;
+}
+
+.wt-log-terminal-panel {
+    position: fixed;
+    bottom: 28px;
+    left: 0;
+    right: 0;
+    height: 0;
+    background: #0d1117;
+    border-top: 1px solid var(--wt-border);
+    z-index: 99;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: height 0.3s ease;
+}
+
+.wt-log-terminal-panel.open {
+    height: 280px;
+}
+
+.wt-log-terminal-panel.fullscreen {
+    height: calc(100vh - 80px);
+}
+
+.wt-log-terminal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 12px;
+    background: #161b22;
+    border-bottom: 1px solid var(--wt-border);
+    flex-shrink: 0;
+}
+
+.wt-log-btn {
+    background: transparent;
+    border: 1px solid var(--wt-border);
+    color: var(--wt-text-muted);
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.72rem;
+    transition: all 0.15s;
+}
+
+.wt-log-btn:hover {
+    background: var(--wt-bg-input);
+    color: var(--wt-text);
+    border-color: var(--wt-border-light);
+}
+
+.wt-log-terminal-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 0;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.6;
+}
+
+.wt-log-line {
+    display: flex;
+    gap: 8px;
+    padding: 1px 12px;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(33, 38, 45, 0.3);
+}
+
+.wt-log-line:hover {
+    background: #161b22;
+}
+
+.wt-log-ts {
+    color: #7d8590;
+    min-width: 80px;
+    flex-shrink: 0;
+    font-size: 0.68rem;
+}
+
+.wt-log-level {
+    min-width: 40px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+
+.wt-log-src {
+    min-width: 55px;
+    flex-shrink: 0;
+    font-weight: 600;
+}
+
+.wt-log-msg {
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #c9d1d9;
 }

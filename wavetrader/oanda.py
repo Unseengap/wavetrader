@@ -410,6 +410,28 @@ class OANDAClient:
 
     # ── Trade management ──────────────────────────────────────────────────
 
+    def get_pending_orders(self, pair: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch all pending orders, optionally filtered by pair."""
+        data = self._api(
+            "GET",
+            f"/v3/accounts/{self.config.account_id}/pendingOrders",
+        )
+        orders = []
+        for o in data.get("orders", []):
+            instrument = o.get("instrument", "")
+            if pair and self._to_instrument(pair) != instrument:
+                continue
+            orders.append({
+                "order_id": o.get("id"),
+                "type": o.get("type", ""),
+                "instrument": instrument,
+                "units": o.get("units", "0"),
+                "price": o.get("price", "0"),
+                "time_in_force": o.get("timeInForce", ""),
+                "create_time": o.get("createTime", ""),
+            })
+        return orders
+
     def get_open_trades(self, pair: Optional[str] = None) -> List[TradeInfo]:
         """Fetch all open trades, optionally filtered by pair."""
         data = self._api(
@@ -518,11 +540,28 @@ class OANDAClient:
 
         results = []
         for t in data.get("trades", []):
+            # Extract close reason from OANDA order states
+            reason = ""
+            if t.get("state") == "CLOSED":
+                sl_order = t.get("stopLossOrder", {})
+                tp_order = t.get("takeProfitOrder", {})
+                tsl_order = t.get("trailingStopLossOrder", {})
+
+                if sl_order.get("state") == "FILLED":
+                    reason = "Stop Loss"
+                elif tp_order.get("state") == "FILLED":
+                    reason = "Take Profit"
+                elif tsl_order.get("state") == "FILLED":
+                    reason = "Trailing Stop"
+                else:
+                    reason = "Manual Close"
+
             results.append({
                 "trade_id": t["id"],
                 "instrument": t["instrument"],
                 "units": float(t.get("initialUnits", t.get("currentUnits", 0))),
                 "price": float(t["price"]),
+                "close_price": float(t["averageClosePrice"]) if "averageClosePrice" in t else None,
                 "realized_pl": float(t.get("realizedPL", 0)),
                 "unrealized_pl": float(t.get("unrealizedPL", 0)),
                 "open_time": t.get("openTime", ""),
@@ -531,6 +570,7 @@ class OANDAClient:
                 "sl": float(t["stopLossOrder"]["price"]) if "stopLossOrder" in t else None,
                 "tp": float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
                 "direction": "BUY" if float(t.get("initialUnits", t.get("currentUnits", 0))) > 0 else "SELL",
+                "reason": reason,
             })
         return results
 

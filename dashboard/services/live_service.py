@@ -345,6 +345,23 @@ class LiveService:
 
         return all_trades
 
+    def get_pending_orders(self) -> list:
+        """Fetch pending orders from both OANDA accounts."""
+        all_orders = []
+
+        for label, client in [("demo", self._oanda_demo), ("live", self._oanda_live)]:
+            if not client:
+                continue
+            try:
+                orders = client.get_pending_orders(self._pair)
+                for o in orders:
+                    o["account"] = label
+                all_orders.extend(orders)
+            except Exception as e:
+                logger.error("get_pending_orders (%s): %s", label, e)
+
+        return all_orders
+
     def get_trade_history(self, pair: Optional[str] = None, count: int = 50) -> list:
         """Fetch trade history from both OANDA accounts (open + closed)."""
         all_trades = []
