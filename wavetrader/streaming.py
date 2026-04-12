@@ -1052,9 +1052,20 @@ def main() -> None:
             raw_sd = state
         # Strip _orig_mod. prefix from torch.compile'd checkpoints
         cleaned = {k.replace("_orig_mod.", ""): v for k, v in raw_sd.items()}
-        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        # Filter out keys with shape mismatches (architecture evolution)
+        model_sd = model.state_dict()
+        compatible = {
+            k: v for k, v in cleaned.items()
+            if k in model_sd and v.shape == model_sd[k].shape
+        }
+        missing, unexpected = model.load_state_dict(compatible, strict=False)
+        loaded_count = len(compatible)
+        total_count = len(model_sd)
         if missing:
-            logger.warning("Missing %d keys in checkpoint (new layers will use random init)", len(missing))
+            logger.warning("Loaded %d/%d params (%d new layers use random init)",
+                           loaded_count, total_count, len(missing))
+        else:
+            logger.info("Loaded all %d params from checkpoint", loaded_count)
         logger.info("Loaded model weights from %s", checkpoint_path)
 
     # OANDA clients (demo always, live if configured)

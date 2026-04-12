@@ -168,11 +168,16 @@ class StateManager:
             raw_sd = checkpoint
         # Strip _orig_mod. prefix from torch.compile'd checkpoints
         cleaned = {k.replace("_orig_mod.", ""): v for k, v in raw_sd.items()}
-        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        # Filter out keys with shape mismatches (architecture evolution)
+        model_sd = model.state_dict()
+        compatible = {
+            k: v for k, v in cleaned.items()
+            if k in model_sd and v.shape == model_sd[k].shape
+        }
+        missing, unexpected = model.load_state_dict(compatible, strict=False)
         if missing:
-            logger.warning("Missing keys in checkpoint (new layers): %d keys", len(missing))
-        if unexpected:
-            logger.warning("Unexpected keys in checkpoint (removed layers): %d keys", len(unexpected))
+            logger.warning("Checkpoint partial load: %d/%d params (%d missing/reshaped)",
+                           len(compatible), len(model_sd), len(missing))
         logger.info("Model weights restored")
 
     def restore_resonance_buffer(
