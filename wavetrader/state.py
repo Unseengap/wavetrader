@@ -163,9 +163,16 @@ class StateManager:
     ) -> None:
         """Restore model weights from checkpoint."""
         if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
+            raw_sd = checkpoint["model_state_dict"]
         else:
-            model.load_state_dict(checkpoint)
+            raw_sd = checkpoint
+        # Strip _orig_mod. prefix from torch.compile'd checkpoints
+        cleaned = {k.replace("_orig_mod.", ""): v for k, v in raw_sd.items()}
+        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        if missing:
+            logger.warning("Missing keys in checkpoint (new layers): %d keys", len(missing))
+        if unexpected:
+            logger.warning("Unexpected keys in checkpoint (removed layers): %d keys", len(unexpected))
         logger.info("Model weights restored")
 
     def restore_resonance_buffer(

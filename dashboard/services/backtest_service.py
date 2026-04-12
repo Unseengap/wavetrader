@@ -764,7 +764,7 @@ def _load_latest_model(checkpoint_dir: Path, config: Any,
                     # Strip _orig_mod. prefix from torch.compile'd checkpoints
                     cleaned = {k.replace("_orig_mod.", ""): v
                                for k, v in raw_sd.items()}
-                    model.load_state_dict(cleaned)
+                    model.load_state_dict(cleaned, strict=False)
                     logger.info("Model loaded from %s", matches[0])
                     return model
                 except Exception as e:

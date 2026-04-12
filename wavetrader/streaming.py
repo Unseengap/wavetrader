@@ -1052,7 +1052,9 @@ def main() -> None:
             raw_sd = state
         # Strip _orig_mod. prefix from torch.compile'd checkpoints
         cleaned = {k.replace("_orig_mod.", ""): v for k, v in raw_sd.items()}
-        model.load_state_dict(cleaned)
+        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        if missing:
+            logger.warning("Missing %d keys in checkpoint (new layers will use random init)", len(missing))
         logger.info("Loaded model weights from %s", checkpoint_path)
 
     # OANDA clients (demo always, live if configured)

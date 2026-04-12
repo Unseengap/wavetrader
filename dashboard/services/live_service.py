@@ -768,7 +768,7 @@ class LiveService:
                         # Strip _orig_mod. prefix from torch.compile'd checkpoints
                         cleaned = {k.replace("_orig_mod.", ""): v
                                    for k, v in raw_sd.items()}
-                        self._model.load_state_dict(cleaned)
+                        self._model.load_state_dict(cleaned, strict=False)
                         self._model.to(self._device)
                         self._model.eval()
                         loaded = True
