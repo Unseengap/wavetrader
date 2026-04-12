@@ -43,6 +43,8 @@ services:
       - MODEL_ID=wavefollower
       - OANDA_API_KEY=${WF_OANDA_DEMO_API_KEY}
       - OANDA_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
+      - OANDA_DEMO_API_KEY=${WF_OANDA_DEMO_API_KEY}
+      - OANDA_DEMO_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
       - OANDA_ENVIRONMENT=practice
       - CHECKPOINT_PATH=/checkpoints/wavefollower_20260412_023912/model_weights.pt
       - PAIR=GBP/JPY
