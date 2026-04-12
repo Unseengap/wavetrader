@@ -5,6 +5,11 @@ services:
     image: wavetrader:latest
     container_name: wavetrader-mtf
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "wavetrader.streaming"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     volumes:
       - ./data:/data:rw
       - ./checkpoints:/checkpoints:rw
@@ -32,6 +37,11 @@ services:
     image: wavetrader:latest
     container_name: wavetrader-wavefollower
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "wavetrader.streaming"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     volumes:
       - ./data:/data:rw
       - ./checkpoints:/checkpoints:rw
