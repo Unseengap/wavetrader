@@ -41,7 +41,7 @@ async function loadLiveCandles(pair, tf) {
         }
 
         // Then load recent live candles from OANDA (up to 5000)
-        const params = new URLSearchParams({ pair, tf, count: '5000' });
+        const params = new URLSearchParams({ pair, tf, count: '5000', model: (typeof currentModel !== 'undefined' ? currentModel : 'mtf') });
         const resp = await fetch(`/api/live/candles?${params}`);
         const data = await resp.json();
 
@@ -89,7 +89,8 @@ async function loadLiveCandles(pair, tf) {
 function connectSSE() {
     disconnectSSE();
 
-    eventSource = new EventSource('/api/live/stream');
+    const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+    eventSource = new EventSource(`/api/live/stream?model=${encodeURIComponent(model)}`);
 
     eventSource.onopen = () => {
         setText('connection-status',  '');
@@ -299,7 +300,8 @@ function disconnectSSE() {
 
 async function refreshAccount() {
     try {
-        const resp = await fetch('/api/live/account');
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/account?model=${encodeURIComponent(model)}`);
         const a = await resp.json();
         if (a.error) {
             if (typeof showToast === 'function') showToast('OANDA: ' + a.error, 'error');
@@ -361,7 +363,8 @@ async function loadOrders() {
     if (!container) return;
 
     try {
-        const resp = await fetch('/api/live/orders');
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/orders?model=${encodeURIComponent(model)}`);
         const data = await resp.json();
         const orders = data.orders || [];
 
@@ -398,7 +401,8 @@ async function loadTradeHistory() {
     if (!body) return;
 
     try {
-        const resp = await fetch('/api/live/trade-history?count=100');
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/trade-history?count=100&model=${encodeURIComponent(model)}`);
         const data = await resp.json();
         const trades = data.trades || [];
         _liveTradeHistory = trades;

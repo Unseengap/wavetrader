@@ -1,8 +1,9 @@
 services:
-  wavetrader:
+  # ── Model A: WaveTrader MTF (existing) ──────────────────────────────────
+  wavetrader-mtf:
     build: .
     image: wavetrader:latest
-    container_name: wavetrader-live
+    container_name: wavetrader-mtf
     restart: unless-stopped
     volumes:
       - ./data:/data:rw
@@ -12,6 +13,10 @@ services:
     environment:
       - CHECKPOINT_DIR=/data/checkpoints
       - CHECKPOINT_INTERVAL=100
+      - MODEL_ID=mtf
+      - OANDA_API_KEY=${OANDA_DEMO_API_KEY}
+      - OANDA_ACCOUNT_ID=${MTF_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - OANDA_ENVIRONMENT=practice
     depends_on:
       - redis
     logging:
@@ -19,6 +24,36 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+
+  # ── Model B: WaveFollower (trend-following) ──────────────────────────────
+  # Uses OANDA account 101-001-30902818-002 (same user, separate account)
+  # Uncomment once you have a trained checkpoint.
+  # wavetrader-wavefollower:
+  #   build: .
+  #   image: wavetrader:latest
+  #   container_name: wavetrader-wavefollower
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./data:/data:rw
+  #     - ./checkpoints:/checkpoints:rw
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - CHECKPOINT_DIR=/data/checkpoints
+  #     - CHECKPOINT_INTERVAL=100
+  #     - MODEL_ID=wavefollower
+  #     - OANDA_API_KEY=${WF_OANDA_DEMO_API_KEY}
+  #     - OANDA_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
+  #     - OANDA_ENVIRONMENT=practice
+  #     - CHECKPOINT_PATH=/checkpoints/wavefollower/model_weights.pt
+  #     - PAIR=GBP/JPY
+  #   depends_on:
+  #     - redis
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "50m"
+  #       max-file: "5"
 
   redis:
     image: redis:7-alpine
@@ -46,10 +81,17 @@ services:
     env_file:
       - .env
     environment:
+      # Model registry — JSON array of model definitions
+      # For a single model, this can be omitted (falls back to default MTF)
+      - MODEL_REGISTRY=${MODEL_REGISTRY:-}
+      # Model A (MTF) — OANDA credentials
       - OANDA_DEMO_API_KEY=${OANDA_DEMO_API_KEY}
-      - OANDA_DEMO_ACCOUNT_ID=${OANDA_DEMO_ACCOUNT_ID}
+      - OANDA_DEMO_ACCOUNT_ID=${MTF_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
       - OANDA_LIVE_API_KEY=${OANDA_LIVE_API_KEY:-}
-      - OANDA_LIVE_ACCOUNT_ID=${OANDA_LIVE_ACCOUNT_ID:-}
+      - OANDA_LIVE_ACCOUNT_ID=${MTF_OANDA_LIVE_ACCOUNT_ID:-${OANDA_LIVE_ACCOUNT_ID:-}}
+      # Model B (WaveFollower) — OANDA credentials
+      - WF_OANDA_DEMO_API_KEY=${WF_OANDA_DEMO_API_KEY:-}
+      - WF_OANDA_DEMO_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID:-}
     command: python -m dashboard.run --host 0.0.0.0 --port 5000
     depends_on:
       - redis

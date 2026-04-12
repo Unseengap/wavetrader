@@ -82,6 +82,18 @@ body {
     box-shadow: 0 0 0 2px var(--wt-blue-dim);
 }
 
+#nav-model-select {
+    border-color: var(--wt-purple, #bc8cff);
+    color: var(--wt-purple, #bc8cff);
+    -webkit-text-fill-color: var(--wt-purple, #bc8cff);
+    font-weight: 600;
+}
+
+#nav-model-select:focus {
+    border-color: var(--wt-purple, #bc8cff);
+    box-shadow: 0 0 0 2px rgba(188, 140, 255, 0.2);
+}
+
 /* ── TF Buttons ─────────────────────────────────────────────────────────── */
 
 .wt-tf-group {

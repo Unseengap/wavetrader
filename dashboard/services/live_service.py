@@ -114,20 +114,29 @@ class SSEBroadcaster:
 
 class LiveService:
     """
-    Singleton-ish service managing OANDA streaming + model inference.
+    Per-model service managing OANDA data viewing + model inference.
+
+    Each model gets its own LiveService instance pointed at a specific
+    OANDA account.  Trading is handled by the standalone wavetrader
+    containers — this service is for *viewing* data and streaming it
+    to the dashboard frontend.
 
     Lifecycle:
-      svc = LiveService()
+      svc = LiveService(model_id="mtf")
       svc.start("GBP/JPY", "15min")  # spawns background thread
       ...
       svc.stop()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, model_id: str = "mtf") -> None:
+        from .model_registry import get_model_registry
+
+        self.model_id = model_id
+        self._model_entry = get_model_registry().get(model_id)
         self.broadcaster = SSEBroadcaster()
         self._thread: Optional[threading.Thread] = None
         self._running = False
-        self._pair: str = "GBP/JPY"
+        self._pair: str = self._model_entry.pair if self._model_entry else "GBP/JPY"
         self._timeframe: str = "15min"
         self._oanda_demo = None   # OANDAClient for practice account (always)
         self._oanda_live = None   # OANDAClient for live account (optional)
@@ -169,6 +178,8 @@ class LiveService:
     def status(self) -> dict:
         return {
             "status": self._status,
+            "model_id": self.model_id,
+            "model_name": self._model_entry.name if self._model_entry else self.model_id,
             "pair": self._pair,
             "timeframe": self._timeframe,
             "clients": self.broadcaster.client_count,
@@ -187,13 +198,22 @@ class LiveService:
         self._status = "starting"
         self._error_msg = ""
 
-        # Lazy-init OANDA clients (demo always, live if configured)
+        # Lazy-init OANDA clients using model-specific env vars
         if self._oanda_demo is None:
             try:
                 from wavetrader.oanda import OANDAClient, OANDAConfig
-                demo_cfg = OANDAConfig.demo_from_env()
+                me = self._model_entry
+                if me and me.demo_api_key and me.demo_account_id:
+                    demo_cfg = OANDAConfig(
+                        api_key=me.demo_api_key,
+                        account_id=me.demo_account_id,
+                        environment="practice",
+                    )
+                else:
+                    demo_cfg = OANDAConfig.demo_from_env()
                 self._oanda_demo = OANDAClient(demo_cfg)
-                logger.info("OANDA demo client initialised (account %s)", demo_cfg.account_id)
+                logger.info("OANDA demo client initialised for model '%s' (account %s)",
+                            self.model_id, demo_cfg.account_id)
             except Exception as e:
                 self._status = "error"
                 self._error_msg = f"OANDA demo init failed: {e}"
@@ -203,15 +223,25 @@ class LiveService:
         if self._oanda_live is None and not self._live_available:
             try:
                 from wavetrader.oanda import OANDAClient, OANDAConfig
-                live_cfg = OANDAConfig.live_from_env()
+                me = self._model_entry
+                if me and me.live_api_key and me.live_account_id:
+                    live_cfg = OANDAConfig(
+                        api_key=me.live_api_key,
+                        account_id=me.live_account_id,
+                        environment="live",
+                    )
+                else:
+                    live_cfg = OANDAConfig.live_from_env()
                 if live_cfg is not None:
                     self._oanda_live = OANDAClient(live_cfg)
                     self._live_available = True
-                    logger.info("OANDA live client initialised (account %s)", live_cfg.account_id)
+                    logger.info("OANDA live client initialised for model '%s' (account %s)",
+                                self.model_id, live_cfg.account_id)
                 else:
-                    logger.info("No live OANDA credentials — trading demo only")
+                    logger.info("No live OANDA credentials for model '%s' — demo only", self.model_id)
             except Exception as e:
-                logger.warning("OANDA live init failed (continuing demo-only): %s", e)
+                logger.warning("OANDA live init failed for model '%s' (continuing demo-only): %s",
+                               self.model_id, e)
 
         # Lazy-load model
         if self._model is None:
@@ -221,7 +251,7 @@ class LiveService:
         self._sync_open_positions()
 
         self._thread = threading.Thread(
-            target=self._stream_loop, daemon=True, name="live-stream"
+            target=self._stream_loop, daemon=True, name=f"live-stream-{self.model_id}"
         )
         self._thread.start()
         return {"status": "started", "pair": pair, "timeframe": timeframe}
@@ -240,10 +270,18 @@ class LiveService:
         if self._oanda_demo is None:
             try:
                 from wavetrader.oanda import OANDAClient, OANDAConfig
-                demo_cfg = OANDAConfig.demo_from_env()
+                me = self._model_entry
+                if me and me.demo_api_key and me.demo_account_id:
+                    demo_cfg = OANDAConfig(
+                        api_key=me.demo_api_key,
+                        account_id=me.demo_account_id,
+                        environment="practice",
+                    )
+                else:
+                    demo_cfg = OANDAConfig.demo_from_env()
                 self._oanda_demo = OANDAClient(demo_cfg)
             except Exception as e:
-                logger.error("Cannot init OANDA demo: %s", e)
+                logger.error("Cannot init OANDA demo for model '%s': %s", self.model_id, e)
                 return []
 
         from wavetrader.oanda import tf_to_granularity
@@ -669,13 +707,16 @@ class LiveService:
     # ── Model loading ─────────────────────────────────────────────────────
 
     def _load_model(self) -> None:
-        """Try to load the latest WaveTrader checkpoint."""
+        """Try to load the latest model checkpoint (type-aware via registry)."""
         try:
             import torch
-            from wavetrader.config import MTFConfig
-            from wavetrader.model import WaveTraderMTF
 
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            # Determine model type from registry
+            model_type = "mtf"
+            if self._model_entry:
+                model_type = getattr(self._model_entry, "model_type", "mtf")
 
             # Search for latest checkpoint
             ckpt_dirs = [
@@ -683,6 +724,10 @@ class LiveService:
                 Path("/checkpoints"),
                 Path("data/live_checkpoints"),
             ]
+            # If the registry entry specifies a checkpoint dir, try that first
+            if self._model_entry and self._model_entry.checkpoint_dir:
+                ckpt_dirs.insert(0, Path(self._model_entry.checkpoint_dir))
+
             loaded = False
             for ckpt_dir in ckpt_dirs:
                 if not ckpt_dir.is_dir():
@@ -690,8 +735,15 @@ class LiveService:
                 for d in sorted(ckpt_dir.iterdir(), reverse=True):
                     weights = d / "model_weights.pt"
                     if weights.exists():
-                        self._model_config = MTFConfig(pair=self._pair)
-                        self._model = WaveTraderMTF(self._model_config)
+                        if model_type == "wavefollower":
+                            from wavetrader.wave_follower import WaveFollower, WaveFollowerConfig
+                            self._model_config = WaveFollowerConfig(pair=self._pair)
+                            self._model = WaveFollower(self._model_config)
+                        else:
+                            from wavetrader.config import MTFConfig
+                            from wavetrader.model import WaveTraderMTF
+                            self._model_config = MTFConfig(pair=self._pair)
+                            self._model = WaveTraderMTF(self._model_config)
 
                         state = torch.load(
                             str(weights), weights_only=False, map_location=self._device
@@ -703,16 +755,14 @@ class LiveService:
                         self._model.to(self._device)
                         self._model.eval()
                         loaded = True
-                        logger.info("Loaded model from %s", weights)
+                        logger.info("Loaded %s model from %s", model_type, weights)
                         break
                 if loaded:
                     break
 
             if not loaded:
-                # Fallback to default MTF model without checkpoint
-                self._model_config = MTFConfig(pair=self._pair)
-                self._model = WaveTraderMTF(self._model_config)
-                logger.warning("No model checkpoint found — signals will not be generated")
+                logger.warning("No model checkpoint found for '%s' — signals will not be generated",
+                               self.model_id)
                 self._model = None
 
         except Exception as e:
@@ -789,7 +839,7 @@ class LiveService:
             alignment = out.get("alignment", torch.tensor([1.0])).item()
             risk = out["risk_params"][0]
 
-            return {
+            result = {
                 "signal": signal_name,
                 "confidence": round(confidence * (0.5 + 0.5 * alignment), 4),
                 "alignment": round(alignment, 4),
@@ -798,6 +848,15 @@ class LiveService:
                 "trailing_pct": round(float(risk[2].item() * 0.5), 4),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
+            # WaveFollower-specific outputs
+            if "trend_logits" in out:
+                trend_idx = out["trend_logits"].argmax(-1).item()
+                result["trend"] = ["UP", "DOWN", "NEUTRAL"][trend_idx]
+            if "add_score" in out:
+                result["add_score"] = round(out["add_score"].item(), 4)
+
+            return result
 
         except Exception as e:
             logger.error("Inference failed: %s", e)
@@ -946,13 +1005,20 @@ class LiveService:
         logger.info("Live stream stopped")
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
-_live_service: Optional[LiveService] = None
+# ── Module-level service registry ─────────────────────────────────────────────
+_live_services: Dict[str, LiveService] = {}
 
 
-def get_live_service() -> LiveService:
-    """Return (or create) the global LiveService singleton."""
-    global _live_service
-    if _live_service is None:
-        _live_service = LiveService()
-    return _live_service
+def get_live_service(model_id: Optional[str] = None) -> LiveService:
+    """Return (or create) the LiveService for the given model.
+
+    Falls back to the default model if *model_id* is not specified.
+    """
+    from .model_registry import get_model_registry
+
+    if model_id is None:
+        model_id = get_model_registry().default_id
+
+    if model_id not in _live_services:
+        _live_services[model_id] = LiveService(model_id=model_id)
+    return _live_services[model_id]

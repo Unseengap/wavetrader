@@ -5,6 +5,15 @@
  */
 
 let chartManager = null;
+let currentModel = localStorage.getItem('wt-selected-model') || 'mtf';
+
+/**
+ * Return the current model query parameter string, e.g. "&model=mtf".
+ * Callers can append this to any URL that needs the model parameter.
+ */
+function modelParam(prefix = '&') {
+    return `${prefix}model=${encodeURIComponent(currentModel)}`;
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
     // Init TradingView chart
@@ -12,6 +21,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Restore layout state
     restoreLayoutState();
+
+    // Load available models into the dropdown, then start
+    await loadModelSelector();
 
     // Wire up event listeners
     setupLiveEventListeners();
@@ -27,16 +39,64 @@ document.addEventListener('DOMContentLoaded', async () => {
     await startLiveMode();
 });
 
+async function loadModelSelector() {
+    const select = document.getElementById('nav-model-select');
+    if (!select) return;
+
+    try {
+        const resp = await fetch('/api/live/models');
+        const data = await resp.json();
+        const models = data.models || [];
+        const defaultId = data.default || 'mtf';
+
+        if (models.length > 0) {
+            select.innerHTML = '';
+            models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name;
+                if (m.description) opt.title = m.description;
+                select.appendChild(opt);
+            });
+        }
+
+        // Restore previously selected model (if still valid)
+        const stored = localStorage.getItem('wt-selected-model');
+        if (stored && models.some(m => m.id === stored)) {
+            currentModel = stored;
+        } else {
+            currentModel = defaultId;
+        }
+        select.value = currentModel;
+
+        // On change: switch model view
+        select.addEventListener('change', async (e) => {
+            currentModel = e.target.value;
+            localStorage.setItem('wt-selected-model', currentModel);
+            showToast(`Switching to ${select.options[select.selectedIndex].text}…`, 'info');
+            await switchModel();
+        });
+    } catch (err) {
+        console.warn('Could not load model list:', err);
+    }
+}
+
+async function switchModel() {
+    // Disconnect current SSE, restart with new model
+    disconnectSSE();
+    await startLiveMode();
+}
+
 async function startLiveMode() {
     const pair = document.getElementById('nav-pair-select').value || 'GBP/JPY';
     const tf = document.getElementById('nav-tf-select').value || '15min';
 
-    // 1. Start the server-side stream
+    // 1. Start the server-side stream for the selected model
     try {
         await fetch('/api/live/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pair, timeframe: '15min' }),
+            body: JSON.stringify({ pair, timeframe: '15min', model: currentModel }),
         });
     } catch (err) {
         showToast('Failed to start live stream: ' + err.message, 'error');
@@ -57,7 +117,9 @@ async function startLiveMode() {
     // 6. Load orders
     await loadOrders();
 
-    showToast('Live mode active — streaming from OANDA', 'success');
+    const modelSelect = document.getElementById('nav-model-select');
+    const modelName = modelSelect ? modelSelect.options[modelSelect.selectedIndex].text : currentModel;
+    showToast(`Live mode active — ${modelName} streaming from OANDA`, 'success');
 }
 
 function setupLiveEventListeners() {
@@ -101,7 +163,7 @@ function setupLiveEventListeners() {
     });
 
     // Fetch auto-trade status to show badges
-    fetch('/api/live/auto-trade')
+    fetch(`/api/live/auto-trade?model=${encodeURIComponent(currentModel)}`)
         .then(r => r.json())
         .then(data => {
             const liveBadge = document.getElementById('auto-trade-live-badge');
