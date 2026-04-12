@@ -733,7 +733,12 @@ class LiveService:
                 if not ckpt_dir.is_dir():
                     continue
                 # Filter checkpoint subdirs by model type prefix
-                prefix = "wavefollower_" if model_type == "wavefollower" else "wavetrader_mtf_"
+                if model_type == "wavefollower":
+                    prefix = "wavefollower_"
+                elif model_type == "meanrev":
+                    prefix = "mean_reversion_"
+                else:
+                    prefix = "wavetrader_mtf_"
                 subdirs = sorted(
                     (d for d in ckpt_dir.iterdir()
                      if d.is_dir() and d.name.startswith(prefix)),
@@ -752,6 +757,11 @@ class LiveService:
                             from wavetrader.wave_follower import WaveFollower, WaveFollowerConfig
                             self._model_config = WaveFollowerConfig(pair=self._pair)
                             self._model = WaveFollower(self._model_config)
+                        elif model_type == "meanrev":
+                            from wavetrader.mean_reversion import MeanReversion
+                            from wavetrader.config import MeanRevConfig
+                            self._model_config = MeanRevConfig(pair=self._pair)
+                            self._model = MeanReversion(self._model_config)
                         else:
                             from wavetrader.config import MTFConfig
                             from wavetrader.model import WaveTraderMTF

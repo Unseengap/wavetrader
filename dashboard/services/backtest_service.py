@@ -335,6 +335,9 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     if model_type == "wavefollower":
         from wavetrader.wave_follower import WaveFollowerConfig
         model_config = WaveFollowerConfig(pair=pair)
+    elif model_type == "meanrev":
+        from wavetrader.config import MeanRevConfig
+        model_config = MeanRevConfig(pair=pair)
     else:
         model_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
 
@@ -729,7 +732,12 @@ def _load_latest_model(checkpoint_dir: Path, config: Any,
         return None
 
     # Filter checkpoint subdirs by model type prefix
-    prefix = "wavefollower_" if model_type == "wavefollower" else "wavetrader_mtf_"
+    if model_type == "wavefollower":
+        prefix = "wavefollower_"
+    elif model_type == "meanrev":
+        prefix = "mean_reversion_"
+    else:
+        prefix = "wavetrader_mtf_"
     ckpt_dirs = sorted(
         [d for d in checkpoint_dir.iterdir()
          if d.is_dir() and d.name.startswith(prefix)],
@@ -753,6 +761,9 @@ def _load_latest_model(checkpoint_dir: Path, config: Any,
                     if model_type == "wavefollower":
                         from wavetrader.wave_follower import WaveFollower, WaveFollowerConfig
                         model = WaveFollower(config)
+                    elif model_type == "meanrev":
+                        from wavetrader.mean_reversion import MeanReversion
+                        model = MeanReversion(config)
                     else:
                         from wavetrader.model import WaveTraderMTF
                         model = WaveTraderMTF(config)

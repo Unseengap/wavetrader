@@ -67,6 +67,42 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # ── Model C: MeanReversion (mean-reversion) ─────────────────────────────
+  # Uses its own OANDA account (separate from MTF and WaveFollower)
+  wavetrader-meanrev:
+    build: .
+    image: wavetrader:latest
+    container_name: wavetrader-meanrev
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ./data:/data:rw
+      - ./checkpoints:/checkpoints:rw
+    env_file:
+      - .env
+    environment:
+      - CHECKPOINT_DIR=/data/checkpoints
+      - CHECKPOINT_INTERVAL=100
+      - MODEL_ID=meanrev
+      - OANDA_API_KEY=${MR_OANDA_DEMO_API_KEY}
+      - OANDA_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID}
+      - OANDA_DEMO_API_KEY=${MR_OANDA_DEMO_API_KEY}
+      - OANDA_DEMO_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID}
+      - OANDA_ENVIRONMENT=practice
+      - PAIR=GBP/JPY
+      - MIN_CONFIDENCE=0.55
+    depends_on:
+      - redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   redis:
     image: redis:7-alpine
     container_name: wavetrader-redis
@@ -104,6 +140,9 @@ services:
       # Model B (WaveFollower) — OANDA credentials
       - WF_OANDA_DEMO_API_KEY=${WF_OANDA_DEMO_API_KEY:-}
       - WF_OANDA_DEMO_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID:-}
+      # Model C (MeanReversion) — OANDA credentials
+      - MR_OANDA_DEMO_API_KEY=${MR_OANDA_DEMO_API_KEY:-}
+      - MR_OANDA_DEMO_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID:-}
     command: python -m dashboard.run --host 0.0.0.0 --port 5000
     depends_on:
       - redis

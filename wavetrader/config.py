@@ -124,6 +124,66 @@ class SIConfig:
     consolidate_every: int = 500       # Batches between consolidation checkpoints
 
 
+@dataclass
+class MeanRevConfig:
+    """Hyperparameters for the MeanReversion model.
+
+    Detects overextended price relative to rolling means and Bollinger-style
+    bands, then trades the snap-back.  Higher win rate (~71 %) but smaller
+    per-trade expectancy than trend-following.
+    """
+
+    # --- Timeframes ---
+    timeframes: List[str] = field(
+        default_factory=lambda: ["15min", "1h", "4h", "1d"]
+    )
+    lookbacks: Dict[str, int] = field(
+        default_factory=lambda: {
+            "15min": 120,
+            "1h":    120,
+            "4h":    100,
+            "1d":     60,
+        }
+    )
+    entry_timeframe: str = "15min"
+
+    # --- Encoder ---
+    tf_wave_dim: int = 192
+    structure_emb_dim: int = 64
+    price_conv_dim: int = 128
+
+    # --- Fusion ---
+    fused_dim: int = 384
+
+    # --- Predictor ---
+    predictor_hidden: int = 384
+    predictor_heads: int = 6
+    predictor_layers: int = 3
+    predictor_ff_dim: int = 1536
+
+    # --- Outputs ---
+    n_signal_classes: int = 3       # BUY / SELL / HOLD
+
+    # --- Mean-reversion specific ---
+    bb_window: int = 20             # Bollinger Band lookback
+    bb_std: float = 2.0             # Bollinger Band width (std devs)
+    zscore_entry: float = 2.0       # Z-score threshold for entry
+    zscore_exit: float = 0.5        # Z-score threshold for exit (snap-back)
+
+    # --- Training ---
+    dropout: float = 0.15
+    learning_rate: float = 2e-4
+    batch_size: int = 640
+    epochs: int = 60
+
+    # --- Pair ---
+    pair: str = "GBP/JPY"
+
+    @property
+    def output_wave_dim(self) -> int:
+        return self.fused_dim
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Unified risk scaling — single source of truth for SL/TP/trailing conversion
 # ─────────────────────────────────────────────────────────────────────────────
