@@ -49,7 +49,8 @@ def run_backtest_endpoint():
 @backtest_bp.route("/cached", methods=["GET"])
 def get_cached_results():
     """Return cached results from backtest_results/ CSVs if available."""
-    results = load_cached_results()
+    model_id = request.args.get("model", "mtf")
+    results = load_cached_results(model_id=model_id)
     if results is None:
         return jsonify({"error": "No cached results found"}), 404
     return jsonify(results)

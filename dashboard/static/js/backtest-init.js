@@ -4,6 +4,9 @@
  * loads defaults, cached results, and wires up event listeners.
  */
 
+// Current model (persisted in localStorage)
+let currentBacktestModel = localStorage.getItem('wt-backtest-model') || 'mtf';
+
 document.addEventListener('DOMContentLoaded', async () => {
     // Init TradingView chart
     chartManager = new ChartManager('priceChart');
@@ -14,6 +17,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Init footer log terminal
     initLogTerminal();
 
+    // Populate model dropdown from API
+    await populateModelDropdown();
+
     // Load defaults into form
     await loadDefaults();
 
@@ -22,7 +28,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tf = document.getElementById('nav-tf-select').value || '1h';
     await chartManager.loadCandles(pair, tf);
 
-    // Try loading cached results
+    // Try loading cached results for the selected model
     await loadCachedResults();
 
     // Set up event listeners
@@ -31,6 +37,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupDragHandle();
     setupKeyboardShortcuts();
 });
+
+async function populateModelDropdown() {
+    const select = document.getElementById('nav-model-select');
+    if (!select) return;
+    try {
+        const resp = await fetch('/api/live/models');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.models && data.models.length) {
+            select.innerHTML = data.models.map(m =>
+                `<option value="${m.id}" ${m.id === currentBacktestModel ? 'selected' : ''}>${m.name}</option>`
+            ).join('');
+        }
+    } catch (err) { /* keep default option */ }
+
+    select.addEventListener('change', async (e) => {
+        currentBacktestModel = e.target.value;
+        localStorage.setItem('wt-backtest-model', currentBacktestModel);
+        // Reload cached results for the newly selected model
+        currentResults = null;
+        await loadCachedResults();
+    });
+}
 
 function setupBacktestEventListeners() {
     // Run backtest button

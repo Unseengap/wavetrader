@@ -732,7 +732,20 @@ class LiveService:
             for ckpt_dir in ckpt_dirs:
                 if not ckpt_dir.is_dir():
                     continue
-                for d in sorted(ckpt_dir.iterdir(), reverse=True):
+                # Filter checkpoint subdirs by model type prefix
+                prefix = "wavefollower_" if model_type == "wavefollower" else "wavetrader_mtf_"
+                subdirs = sorted(
+                    (d for d in ckpt_dir.iterdir()
+                     if d.is_dir() and d.name.startswith(prefix)),
+                    reverse=True,
+                )
+                # Fallback: if no prefix-matched dirs, try all subdirs
+                if not subdirs:
+                    subdirs = sorted(
+                        (d for d in ckpt_dir.iterdir() if d.is_dir()),
+                        reverse=True,
+                    )
+                for d in subdirs:
                     weights = d / "model_weights.pt"
                     if weights.exists():
                         if model_type == "wavefollower":
@@ -749,9 +762,13 @@ class LiveService:
                             str(weights), weights_only=False, map_location=self._device
                         )
                         if "model_state_dict" in state:
-                            self._model.load_state_dict(state["model_state_dict"])
+                            raw_sd = state["model_state_dict"]
                         else:
-                            self._model.load_state_dict(state)
+                            raw_sd = state
+                        # Strip _orig_mod. prefix from torch.compile'd checkpoints
+                        cleaned = {k.replace("_orig_mod.", ""): v
+                                   for k, v in raw_sd.items()}
+                        self._model.load_state_dict(cleaned)
                         self._model.to(self._device)
                         self._model.eval()
                         loaded = True

@@ -297,6 +297,15 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     pair = cfg["pair"]
     entry_tf = cfg["entry_timeframe"]
 
+    # Determine model type from registry
+    model_id = cfg.get("model", "mtf")
+    model_type = "mtf"
+    from .model_registry import get_model_registry
+    registry = get_model_registry()
+    entry = registry.get(model_id)
+    if entry:
+        model_type = getattr(entry, "model_type", "mtf")
+
     # Validate numeric config values
     numeric_keys = [
         "initial_balance", "risk_per_trade", "leverage", "spread_pips",
@@ -323,7 +332,11 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     # Build model config
-    mtf_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
+    if model_type == "wavefollower":
+        from wavetrader.wave_follower import WaveFollowerConfig
+        model_config = WaveFollowerConfig(pair=pair)
+    else:
+        model_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
 
     # Load data
     data_dir = _resolve_dir("data")
@@ -332,7 +345,7 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     # Try processed test data first
     df_dict = {}
     pair_tag = pair.replace("/", "")
-    for tf in mtf_config.timeframes:
+    for tf in model_config.timeframes:
         tf_short = tf.replace("min", "m")
         parquet_path = processed_dir / f"{pair_tag}_{tf_short}.parquet"
         if parquet_path.exists():
@@ -374,7 +387,7 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Load model from checkpoint
     checkpoint_dir = _resolve_dir("checkpoints")
-    model = _load_latest_model(checkpoint_dir, mtf_config)
+    model = _load_latest_model(checkpoint_dir, model_config, model_type=model_type)
 
     if model is None:
         return {"error": "No model checkpoint found. Train a model first."}
@@ -385,7 +398,7 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     # Run backtest
     start_time = time.time()
     try:
-        results = run_backtest(model, df_dict, mtf_config, bt_config, device)
+        results = run_backtest(model, df_dict, model_config, bt_config, device)
     except Exception as e:
         logger.error("run_backtest() crashed:\n%s", traceback.format_exc())
         return {"error": f"Backtest engine error: {e}"}
@@ -480,12 +493,32 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def load_cached_results() -> Optional[Dict[str, Any]]:
+def load_cached_results(model_id: str = "mtf") -> Optional[Dict[str, Any]]:
     """
     Load results from existing CSV files in backtest_results/ if available.
     This lets the dashboard display previous backtest results instantly.
+
+    Uses model_id to resolve the per-model results subdirectory:
+      - mtf → backtest_results/ (root, backward compatible)
+      - wavefollower → backtest_results/<results_dir from registry>
     """
+    from .model_registry import get_model_registry
+
     results_dir = _RESULTS_DIR
+
+    # Resolve per-model results directory
+    registry = get_model_registry()
+    entry = registry.get(model_id)
+    if entry and entry.results_dir:
+        model_dir = _RESULTS_DIR / entry.results_dir
+        if model_dir.exists():
+            results_dir = model_dir
+    elif model_id != "mtf" and model_id != registry.default_id:
+        # Try to find a subdir matching the model_id prefix
+        for d in _RESULTS_DIR.iterdir():
+            if d.is_dir() and d.name.startswith(model_id):
+                results_dir = d
+                break
     if not results_dir.exists():
         return None
 
@@ -506,7 +539,7 @@ def load_cached_results() -> Optional[Dict[str, Any]]:
                 "stop_loss": round(float(row.get("stop_loss", 0)), 5),
                 "take_profit": round(float(row.get("take_profit", 0)), 5),
                 "trailing_stop_pct": round(float(row.get("trailing_stop_pct", 0)), 4),
-                "size": round(float(row.get("size", row.get("lot_size", 0.01))), 2),
+                "size": round(float(row.get("size", row.get("size_lots", row.get("lot_size", 0.01)))), 2),
                 "exit_time": str(row.get("exit_time", "")),
                 "exit_price": round(float(row.get("exit_price", 0)), 5),
                 "pnl": round(float(row.get("pnl", 0)), 2),
@@ -687,33 +720,51 @@ def _compute_breakdowns(trades: List[Dict]) -> Dict:
 # Model loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_latest_model(checkpoint_dir: Path, config: Any) -> Any:
+def _load_latest_model(checkpoint_dir: Path, config: Any,
+                       model_type: str = "mtf") -> Any:
     """Find and load the most recent model checkpoint."""
     import torch
 
     if not checkpoint_dir.exists():
         return None
 
-    # Find latest checkpoint directory
+    # Filter checkpoint subdirs by model type prefix
+    prefix = "wavefollower_" if model_type == "wavefollower" else "wavetrader_mtf_"
     ckpt_dirs = sorted(
-        [d for d in checkpoint_dir.iterdir() if d.is_dir()],
+        [d for d in checkpoint_dir.iterdir()
+         if d.is_dir() and d.name.startswith(prefix)],
         key=lambda d: d.stat().st_mtime,
         reverse=True,
     )
+    # Fallback: try all subdirs if no prefix match
+    if not ckpt_dirs:
+        ckpt_dirs = sorted(
+            [d for d in checkpoint_dir.iterdir() if d.is_dir()],
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
 
     for ckpt_dir in ckpt_dirs:
         # Look for model weights
-        for pattern in ["best_model.pt", "model.pt", "*.pt"]:
+        for pattern in ["model_weights.pt", "best_model.pt", "model.pt", "*.pt"]:
             matches = list(ckpt_dir.glob(pattern))
             if matches:
                 try:
-                    from wavetrader.model import WaveTraderMTF
-                    model = WaveTraderMTF(config)
+                    if model_type == "wavefollower":
+                        from wavetrader.wave_follower import WaveFollower, WaveFollowerConfig
+                        model = WaveFollower(config)
+                    else:
+                        from wavetrader.model import WaveTraderMTF
+                        model = WaveTraderMTF(config)
                     state = torch.load(matches[0], map_location="cpu", weights_only=False)
                     if "model_state_dict" in state:
-                        model.load_state_dict(state["model_state_dict"])
+                        raw_sd = state["model_state_dict"]
                     else:
-                        model.load_state_dict(state)
+                        raw_sd = state
+                    # Strip _orig_mod. prefix from torch.compile'd checkpoints
+                    cleaned = {k.replace("_orig_mod.", ""): v
+                               for k, v in raw_sd.items()}
+                    model.load_state_dict(cleaned)
                     logger.info("Model loaded from %s", matches[0])
                     return model
                 except Exception as e:

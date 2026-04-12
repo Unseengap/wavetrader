@@ -1024,25 +1024,35 @@ def main() -> None:
     checkpoint_dir = os.environ.get("CHECKPOINT_DIR", "/data/checkpoints")
     checkpoint_interval = int(os.environ.get("CHECKPOINT_INTERVAL", "100"))
     checkpoint_path = os.environ.get("CHECKPOINT_PATH")
+    model_id = os.environ.get("MODEL_ID", "mtf")
 
-    # Model config
-    mtf_config = MTFConfig(pair=pair)
+    # Model config — select architecture based on MODEL_ID
+    if model_id == "wavefollower":
+        from .wave_follower import WaveFollower, WaveFollowerConfig
+        model_config = WaveFollowerConfig(pair=pair)
+        model = WaveFollower(model_config)
+        logger.info("Using WaveFollower architecture (MODEL_ID=%s)", model_id)
+    else:
+        model_config = MTFConfig(pair=pair)
+        model = WaveTraderMTF(model_config)
+        logger.info("Using WaveTraderMTF architecture (MODEL_ID=%s)", model_id)
+
     bt_config = BacktestConfig(
         initial_balance=float(os.environ.get("INITIAL_BALANCE", "10000")),
         min_confidence=float(os.environ.get("MIN_CONFIDENCE", "0.30")),
     )
-
-    # Load model
-    model = WaveTraderMTF(mtf_config)
 
     # If a trained checkpoint exists, load weights
     if checkpoint_path and os.path.exists(checkpoint_path):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         state = torch.load(checkpoint_path, weights_only=False, map_location=device)
         if "model_state_dict" in state:
-            model.load_state_dict(state["model_state_dict"])
+            raw_sd = state["model_state_dict"]
         else:
-            model.load_state_dict(state)
+            raw_sd = state
+        # Strip _orig_mod. prefix from torch.compile'd checkpoints
+        cleaned = {k.replace("_orig_mod.", ""): v for k, v in raw_sd.items()}
+        model.load_state_dict(cleaned)
         logger.info("Loaded model weights from %s", checkpoint_path)
 
     # OANDA clients (demo always, live if configured)
@@ -1069,7 +1079,7 @@ def main() -> None:
         model=model,
         oanda_demo=oanda_demo,
         pair=pair,
-        config=mtf_config,
+        config=model_config,
         bt_config=bt_config,
         checkpoint_dir=checkpoint_dir,
         checkpoint_interval=checkpoint_interval,

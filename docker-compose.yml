@@ -27,33 +27,33 @@ services:
 
   # ── Model B: WaveFollower (trend-following) ──────────────────────────────
   # Uses OANDA account 101-001-30902818-002 (same user, separate account)
-  # Uncomment once you have a trained checkpoint.
-  # wavetrader-wavefollower:
-  #   build: .
-  #   image: wavetrader:latest
-  #   container_name: wavetrader-wavefollower
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./data:/data:rw
-  #     - ./checkpoints:/checkpoints:rw
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     - CHECKPOINT_DIR=/data/checkpoints
-  #     - CHECKPOINT_INTERVAL=100
-  #     - MODEL_ID=wavefollower
-  #     - OANDA_API_KEY=${WF_OANDA_DEMO_API_KEY}
-  #     - OANDA_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
-  #     - OANDA_ENVIRONMENT=practice
-  #     - CHECKPOINT_PATH=/checkpoints/wavefollower/model_weights.pt
-  #     - PAIR=GBP/JPY
-  #   depends_on:
-  #     - redis
-  #   logging:
-  #     driver: json-file
-  #     options:
-  #       max-size: "50m"
-  #       max-file: "5"
+  wavetrader-wavefollower:
+    build: .
+    image: wavetrader:latest
+    container_name: wavetrader-wavefollower
+    restart: unless-stopped
+    volumes:
+      - ./data:/data:rw
+      - ./checkpoints:/checkpoints:rw
+    env_file:
+      - .env
+    environment:
+      - CHECKPOINT_DIR=/data/checkpoints
+      - CHECKPOINT_INTERVAL=100
+      - MODEL_ID=wavefollower
+      - OANDA_API_KEY=${WF_OANDA_DEMO_API_KEY}
+      - OANDA_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
+      - OANDA_ENVIRONMENT=practice
+      - CHECKPOINT_PATH=/checkpoints/wavefollower_20260412_023912/model_weights.pt
+      - PAIR=GBP/JPY
+      - MIN_CONFIDENCE=0.55
+    depends_on:
+      - redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   redis:
     image: redis:7-alpine

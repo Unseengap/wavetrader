@@ -44,6 +44,7 @@ class ModelEntry:
     live_api_key_env: str = "OANDA_LIVE_API_KEY"
     live_account_id_env: str = "OANDA_LIVE_ACCOUNT_ID"
     checkpoint_dir: str = ""
+    results_dir: str = ""  # subdir under backtest_results/ for cached results
 
     @property
     def demo_api_key(self) -> str:

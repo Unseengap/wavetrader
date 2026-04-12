@@ -69,7 +69,8 @@ async function loadDefaults() {
 
 async function loadCachedResults() {
     try {
-        const resp = await fetch('/api/backtest/cached');
+        const model = typeof currentBacktestModel !== 'undefined' ? currentBacktestModel : 'mtf';
+        const resp = await fetch(`/api/backtest/cached?model=${model}`);
         if (!resp.ok) return;
 
         const results = await resp.json();
@@ -93,6 +94,8 @@ async function runBacktest() {
 
     // Collect config from form
     const config = collectConfig();
+    // Include the selected model so the backend loads the correct architecture
+    config.model = typeof currentBacktestModel !== 'undefined' ? currentBacktestModel : 'mtf';
 
     try {
         showToast('Running backtest… This may take a few minutes.', 'info');
