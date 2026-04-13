@@ -52,7 +52,7 @@ class LLMArbiterConfig:
     timeout: int = 15                           # seconds
     temperature: float = 0.2                    # low for deterministic decisions
     escalate_on_high_impact: bool = True        # use Pro for high-impact calendar events
-    max_retries: int = 2
+    max_retries: int = 3
     recent_bars_count: int = 30                 # how many OHLCV bars to include in prompt
     recent_trades_count: int = 10               # how many past trades to include
 
@@ -332,13 +332,24 @@ class LLMArbiter:
                         system_instruction=system_instruction,
                         temperature=self.config.temperature,
                         max_output_tokens=1024,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
-                return response.text or ""
+                # resp.text can be None with thinking models — extract from parts as fallback
+                text = response.text
+                if not text and response.candidates:
+                    parts = getattr(response.candidates[0].content, "parts", None)
+                    if parts:
+                        text = "".join(
+                            p.text for p in parts
+                            if getattr(p, "text", None) and not getattr(p, "thought", False)
+                        )
+                return text or ""
             except Exception as e:
                 if attempt < self.config.max_retries:
-                    logger.warning("Gemini API attempt %d failed: %s — retrying", attempt + 1, e)
-                    time.sleep(1 * (attempt + 1))
+                    wait = 2 ** attempt  # exponential backoff: 1s, 2s, 4s
+                    logger.warning("Gemini API attempt %d failed: %s — retrying in %ds", attempt + 1, e, wait)
+                    time.sleep(wait)
                 else:
                     raise
 
