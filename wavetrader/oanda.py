@@ -546,13 +546,14 @@ class OANDAClient:
 
         results = []
         for t in data.get("trades", []):
+            # Extract order objects (needed for both reason and tsl fields)
+            sl_order = t.get("stopLossOrder", {})
+            tp_order = t.get("takeProfitOrder", {})
+            tsl_order = t.get("trailingStopLossOrder", {})
+
             # Extract close reason from OANDA order states
             reason = ""
             if t.get("state") == "CLOSED":
-                sl_order = t.get("stopLossOrder", {})
-                tp_order = t.get("takeProfitOrder", {})
-                tsl_order = t.get("trailingStopLossOrder", {})
-
                 if sl_order.get("state") == "FILLED":
                     reason = "Stop Loss"
                 elif tp_order.get("state") == "FILLED":
