@@ -181,7 +181,7 @@ class LiveService:
         from wavetrader.calendar import get_calendar
         from wavetrader.llm_logger import get_decision_log
 
-        arbiter_enabled = os.environ.get("LLM_ARBITER_ENABLED", "false").lower() == "true"
+        arbiter_enabled = os.environ.get("LLM_ARBITER_ENABLED", "true").lower() == "true"
         arbiter_mode = os.environ.get("LLM_AUTHORITY_MODE", "advisory")
         arbiter_model = os.environ.get("LLM_MODEL", "gemini-2.5-flash")
         self._arbiter_config = LLMArbiterConfig(
@@ -694,9 +694,7 @@ class LiveService:
         return self._decision_log.get_recent(count)
 
     def update_arbiter_config(self, cfg: dict) -> dict:
-        """Update arbiter configuration at runtime."""
-        if "enabled" in cfg:
-            self._arbiter_config.enabled = cfg["enabled"]
+        """Update arbiter configuration at runtime (always stays enabled)."""
         if "authority_mode" in cfg:
             mode = cfg["authority_mode"]
             if mode in ("advisory", "veto", "override"):

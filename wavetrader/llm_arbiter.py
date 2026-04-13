@@ -44,7 +44,7 @@ class ArbiterAction(Enum):
 @dataclass
 class LLMArbiterConfig:
     """Configuration for the LLM signal arbiter."""
-    enabled: bool = False
+    enabled: bool = True
     authority_mode: str = "advisory"            # advisory / veto / override
     model: str = "gemini-2.5-flash"             # gemini-2.5-flash or gemini-2.5-pro
     escalation_model: str = "gemini-2.5-pro"    # used for high-impact events

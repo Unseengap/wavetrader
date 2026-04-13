@@ -15,13 +15,6 @@ function initArbiterPanel() {
     loadArbiterDecisions();
 
     // Wire up controls
-    const enableToggle = document.getElementById('arbiter-enabled-toggle');
-    if (enableToggle) {
-        enableToggle.addEventListener('change', () => {
-            updateArbiterConfig({ enabled: enableToggle.checked });
-        });
-    }
-
     const modeSelect = document.getElementById('arbiter-mode-select');
     if (modeSelect) {
         modeSelect.addEventListener('change', () => {
@@ -45,8 +38,7 @@ async function loadArbiterStatus() {
         const data = await resp.json();
 
         // Update UI
-        const toggle = document.getElementById('arbiter-enabled-toggle');
-        if (toggle) toggle.checked = data.enabled;
+        // Arbiter is always enabled
 
         const modeSelect = document.getElementById('arbiter-mode-select');
         if (modeSelect) modeSelect.value = data.authority_mode || 'advisory';
@@ -98,11 +90,11 @@ async function updateArbiterConfig(cfg) {
         const badge = document.getElementById('arbiter-status-badge');
         if (badge) {
             const mode = (data.authority_mode || 'advisory').toUpperCase();
-            badge.textContent = data.enabled ? mode : 'DISABLED';
+            badge.textContent = mode;
         }
 
         if (typeof showToast === 'function') {
-            showToast(`Arbiter: ${data.enabled ? data.authority_mode : 'disabled'}`, 'info');
+            showToast(`Arbiter: ${data.authority_mode}`, 'info');
         }
     } catch (err) {
         console.warn('Failed to update arbiter config:', err);

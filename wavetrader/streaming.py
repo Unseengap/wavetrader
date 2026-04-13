@@ -192,7 +192,7 @@ class StreamingEngine:
         # ── LLM Arbiter (optional) ───────────────────────────────────────
         self._arbiter = None
         self._decision_log = None
-        arbiter_enabled = os.environ.get("LLM_ARBITER_ENABLED", "false").lower() == "true"
+        arbiter_enabled = os.environ.get("LLM_ARBITER_ENABLED", "true").lower() == "true"
         if arbiter_enabled:
             try:
                 from .llm_arbiter import LLMArbiter, LLMArbiterConfig

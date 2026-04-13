@@ -23,7 +23,7 @@ services:
       - OANDA_ACCOUNT_ID=${MTF_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
       - OANDA_ENVIRONMENT=practice
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-false}
+      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
       - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     depends_on:
@@ -149,7 +149,7 @@ services:
       - MR_OANDA_DEMO_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID:-}
       # LLM Arbiter (Gemini)
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-false}
+      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
       - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     command: python -m dashboard.run --host 0.0.0.0 --port 5000
