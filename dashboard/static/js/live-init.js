@@ -369,7 +369,7 @@ function showToast(message, type = 'info') {
 // ── Live Config Panel ──────────────────────────────────────────────────────
 
 const LIVE_CONFIG_DEFAULTS = {
-    min_confidence: 0.65,
+    min_confidence: 0.52,
     risk_per_trade: 0.10,
     atr_halt_multiplier: 3.0,
     drawdown_reduce_threshold: 0.10,
@@ -411,7 +411,7 @@ function populateLiveConfig(cfg) {
         if (el) el.value = val;
     };
     setVal('live-cfg-risk-per-trade', Math.round((cfg.risk_per_trade || 0.10) * 100 * 4) / 4);
-    setVal('live-cfg-min-confidence', Math.round((cfg.min_confidence || 0.65) * 100 / 5) * 5);
+    setVal('live-cfg-min-confidence', Math.round((cfg.min_confidence || 0.52) * 100));
     setVal('live-cfg-atr-halt', cfg.atr_halt_multiplier || 3.0);
     setVal('live-cfg-dd-threshold', Math.round((cfg.drawdown_reduce_threshold || 0.10) * 100));
     const f = cfg.friction || {};
