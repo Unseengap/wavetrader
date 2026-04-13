@@ -358,18 +358,34 @@ function renderOpenPositions(trades) {
         const color = dir === 'BUY' ? 'var(--wt-green)' : 'var(--wt-red)';
         const pnlColor = t.unrealized_pnl >= 0 ? 'var(--wt-green)' : 'var(--wt-red)';
         const accountColor = t.account === 'live' ? 'var(--wt-green)' : '#58a6ff';
+        const initialSl = t.initial_stop_loss ? t.initial_stop_loss.toFixed(3) : '—';
+        const currentSl = t.stop_loss ? t.stop_loss.toFixed(3) : '—';
+        const tp = t.take_profit ? t.take_profit.toFixed(3) : '—';
+        const tsl = t.trailing_stop_loss ? t.trailing_stop_loss.toFixed(3) : null;
+
+        // Check if TSL has moved from initial SL
+        const slMoved = t.initial_stop_loss && t.stop_loss &&
+            Math.abs(t.stop_loss - t.initial_stop_loss) > 0.001;
+        const slLabel = slMoved ? 'TSL' : 'SL';
+        const slHighlight = slMoved ? 'color:#ff9800;font-weight:600' : '';
+
         html += `
-            <div style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border)">
-                <div style="display:flex;justify-content:space-between">
+            <div style="padding:0.5rem;border-bottom:1px solid var(--wt-border)">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                     <span>
-                        <span style="color:${color};font-weight:600">${dir}</span>
-                        <span style="color:${accountColor};font-size:0.65rem;margin-left:4px">${t.account ? t.account.toUpperCase() : ''}</span>
+                        <span style="color:${color};font-weight:700;font-size:0.85rem">${dir}</span>
+                        <span style="color:var(--wt-text);font-size:0.78rem;margin-left:6px">${t.instrument || ''}</span>
+                        <span style="color:${accountColor};font-size:0.65rem;margin-left:6px">${t.account ? t.account.toUpperCase() : ''}</span>
                     </span>
-                    <span style="color:${pnlColor}">${t.unrealized_pnl >= 0 ? '+' : ''}$${t.unrealized_pnl.toFixed(2)}</span>
+                    <span style="color:${pnlColor};font-weight:700;font-size:0.85rem">${t.unrealized_pnl >= 0 ? '+' : ''}$${t.unrealized_pnl.toFixed(2)}</span>
                 </div>
-                <div style="color:var(--wt-text-muted);font-size:0.68rem">
-                    ${t.instrument || ''} @ ${t.price.toFixed(3)} | SL: ${t.stop_loss ? t.stop_loss.toFixed(3) : '—'} | TP: ${t.take_profit ? t.take_profit.toFixed(3) : '—'}
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:0.72rem;color:var(--wt-text-muted)">
+                    <span>Entry: <span style="color:var(--wt-text);font-weight:500">${t.price.toFixed(3)}</span></span>
+                    <span>TP: <span style="color:var(--wt-green);font-weight:500">${tp}</span></span>
+                    <span>Initial SL: <span style="color:var(--wt-red);font-weight:500">${initialSl}</span></span>
+                    <span style="${slHighlight}">${slLabel}: <span style="font-weight:500">${currentSl}</span></span>
                 </div>
+                ${slMoved ? `<div style="font-size:0.68rem;color:#ff9800;margin-top:3px"><i class="bi bi-shield-check"></i> TSL active — SL moved from ${initialSl} to ${currentSl}</div>` : ''}
             </div>
         `;
     });
@@ -485,7 +501,7 @@ function renderLiveTradeHistoryTable(trades) {
     if (!body) return;
 
     if (!trades || trades.length === 0) {
-        body.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--wt-text-muted);padding:2rem">No trade history yet</td></tr>';
+        body.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--wt-text-muted);padding:2rem">No trade history yet</td></tr>';
         if (countEl) countEl.textContent = '0 trades';
         return;
     }
@@ -513,7 +529,9 @@ function renderLiveTradeHistoryTable(trades) {
         const closeTime = t.close_time ? new Date(t.close_time).toLocaleString() : '—';
         const entryPrice = parseFloat(t.price || 0).toFixed(3);
         const exitPrice = t.close_price ? parseFloat(t.close_price).toFixed(3) : '—';
+        const initialSl = t.initial_sl != null ? parseFloat(t.initial_sl).toFixed(3) : '—';
         const sl = t.sl != null ? parseFloat(t.sl).toFixed(3) : '—';
+        const tsl = t.tsl != null ? parseFloat(t.tsl).toFixed(3) : '—';
         const tp = t.tp != null ? parseFloat(t.tp).toFixed(3) : '—';
         const units = Math.abs(parseFloat(t.units || 0));
         const state = t.state === 'OPEN'
@@ -524,6 +542,11 @@ function renderLiveTradeHistoryTable(trades) {
         const accountColor = t.account === 'live' ? 'var(--wt-green)' : '#58a6ff';
         const rowBg = pl > 0 ? 'rgba(63,185,80,0.04)' : pl < 0 ? 'rgba(248,81,73,0.04)' : '';
 
+        // Highlight TSL if it moved from initial SL (trailing stop is working)
+        const slMoved = t.initial_sl != null && t.sl != null && Math.abs(parseFloat(t.sl) - parseFloat(t.initial_sl)) > 0.001;
+        const slColor = slMoved ? 'color:var(--wt-yellow);font-weight:600' : '';
+        const tslColor = tsl !== '—' ? 'color:#ff9800;font-weight:600' : '';
+
         html += `<tr data-account="${t.account || ''}" style="background:${rowBg}">
             <td>${i + 1}</td>
             <td>${openTime}</td>
@@ -531,7 +554,9 @@ function renderLiveTradeHistoryTable(trades) {
             <td style="color:${dirColor};font-weight:600">${dir}</td>
             <td>${entryPrice}</td>
             <td>${exitPrice}</td>
-            <td>${sl}</td>
+            <td style="color:var(--wt-text-muted)">${initialSl}</td>
+            <td style="${slColor}">${sl}</td>
+            <td style="${tslColor}">${tsl}</td>
             <td>${tp}</td>
             <td>${units}</td>
             <td style="color:${plColor};font-weight:600">${plStr}</td>

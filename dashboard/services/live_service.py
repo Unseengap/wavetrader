@@ -161,12 +161,20 @@ class LiveService:
         self._demo_trade_entry: float = 0.0
         self._demo_trade_sl: float = 0.0
         self._demo_trade_tp: float = 0.0
+        self._demo_trade_initial_sl: float = 0.0
+        self._demo_trade_trailing_pct: float = 0.0
+        self._demo_trade_highest: float = 0.0
+        self._demo_trade_lowest: float = float("inf")
 
         self._live_trade_id: Optional[str] = None
         self._live_trade_direction: Optional[str] = None
         self._live_trade_entry: float = 0.0
         self._live_trade_sl: float = 0.0
         self._live_trade_tp: float = 0.0
+        self._live_trade_initial_sl: float = 0.0
+        self._live_trade_trailing_pct: float = 0.0
+        self._live_trade_highest: float = 0.0
+        self._live_trade_lowest: float = float("inf")
 
         # ── LLM Arbiter ──────────────────────────────────────────────────
         from wavetrader.llm_arbiter import LLMArbiter, LLMArbiterConfig, ArbiterContext
@@ -385,6 +393,17 @@ class LiveService:
             try:
                 trades = client.get_open_trades(self._pair)
                 for t in trades:
+                    # Look up our tracked initial SL and trailing state
+                    if label == "demo" and self._demo_trade_id == t.trade_id:
+                        initial_sl = self._demo_trade_initial_sl or t.stop_loss
+                        tsl = self._demo_trade_sl if self._demo_trade_sl != self._demo_trade_initial_sl else None
+                    elif label == "live" and self._live_trade_id == t.trade_id:
+                        initial_sl = self._live_trade_initial_sl or t.stop_loss
+                        tsl = self._live_trade_sl if self._live_trade_sl != self._live_trade_initial_sl else None
+                    else:
+                        initial_sl = t.stop_loss
+                        tsl = None
+
                     all_trades.append({
                         "trade_id": t.trade_id,
                         "instrument": t.instrument,
@@ -393,6 +412,8 @@ class LiveService:
                         "unrealized_pnl": t.unrealized_pnl,
                         "stop_loss": t.stop_loss,
                         "take_profit": t.take_profit,
+                        "initial_stop_loss": initial_sl,
+                        "trailing_stop_loss": tsl or t.trailing_stop_loss,
                         "direction": "BUY" if t.units > 0 else "SELL",
                         "account": label,
                     })
@@ -422,6 +443,13 @@ class LiveService:
         """Fetch trade history from both OANDA accounts (open + closed)."""
         all_trades = []
 
+        # Build a lookup from trade_id → initial_sl from our own trade log
+        initial_sl_map = {}
+        for rec in self._trade_log:
+            tid = rec.get("trade_id")
+            if tid and "initial_sl" in rec:
+                initial_sl_map[tid] = rec["initial_sl"]
+
         for label, client in [("demo", self._oanda_demo), ("live", self._oanda_live)]:
             if not client:
                 continue
@@ -429,6 +457,13 @@ class LiveService:
                 trades = client.get_trade_history(pair=pair or self._pair, state="ALL", count=count)
                 for t in trades:
                     t["account"] = label
+                    # Enrich with initial_sl from our trade log if available
+                    tid = t.get("trade_id")
+                    if tid in initial_sl_map:
+                        t["initial_sl"] = initial_sl_map[tid]
+                    else:
+                        # Fallback: if no TSL data, initial_sl = current sl
+                        t.setdefault("initial_sl", t.get("sl"))
                 all_trades.extend(trades)
             except Exception as e:
                 logger.error("get_trade_history (%s): %s", label, e)
@@ -470,6 +505,9 @@ class LiveService:
                     self._demo_trade_entry = t.price
                     self._demo_trade_sl = t.stop_loss or 0.0
                     self._demo_trade_tp = t.take_profit or 0.0
+                    self._demo_trade_initial_sl = t.stop_loss or 0.0
+                    self._demo_trade_highest = t.price
+                    self._demo_trade_lowest = t.price
                     logger.info(
                         "Synced existing demo position: %s %s @ %.3f",
                         t.trade_id, self._demo_trade_direction, t.price,
@@ -488,6 +526,9 @@ class LiveService:
                     self._live_trade_entry = t.price
                     self._live_trade_sl = t.stop_loss or 0.0
                     self._live_trade_tp = t.take_profit or 0.0
+                    self._live_trade_initial_sl = t.stop_loss or 0.0
+                    self._live_trade_highest = t.price
+                    self._live_trade_lowest = t.price
                     logger.info(
                         "Synced existing live position: %s %s @ %.3f",
                         t.trade_id, self._live_trade_direction, t.price,
@@ -795,8 +836,10 @@ class LiveService:
             "entry_price": round(current_price, 5),
             "units": units,
             "sl": round(sl_price, 5),
+            "initial_sl": round(sl_price, 5),
             "tp": round(tp_price, 5),
             "confidence": signal_dict["confidence"],
+            "trailing_pct": signal_dict.get("trailing_pct", 0.0),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "account": account,
         }
@@ -812,18 +855,27 @@ class LiveService:
             if order.status == "FILLED":
                 trade_record["trade_id"] = order.trade_id
                 trade_record["status"] = "filled"
+                trailing_pct = signal_dict.get("trailing_pct", 0.0)
                 if account == "demo":
                     self._demo_trade_id = order.trade_id
                     self._demo_trade_direction = sig
                     self._demo_trade_entry = order.price
                     self._demo_trade_sl = sl_price
                     self._demo_trade_tp = tp_price
+                    self._demo_trade_initial_sl = sl_price
+                    self._demo_trade_trailing_pct = trailing_pct
+                    self._demo_trade_highest = order.price
+                    self._demo_trade_lowest = order.price
                 else:
                     self._live_trade_id = order.trade_id
                     self._live_trade_direction = sig
                     self._live_trade_entry = order.price
                     self._live_trade_sl = sl_price
                     self._live_trade_tp = tp_price
+                    self._live_trade_initial_sl = sl_price
+                    self._live_trade_trailing_pct = trailing_pct
+                    self._live_trade_highest = order.price
+                    self._live_trade_lowest = order.price
                 logger.info(
                     "OANDA [%s] order filled: %s @ %.3f",
                     account.upper(), order.trade_id, order.price,
@@ -872,10 +924,18 @@ class LiveService:
             self._demo_trade_id = None
             self._demo_trade_direction = None
             self._demo_trade_entry = 0.0
+            self._demo_trade_initial_sl = 0.0
+            self._demo_trade_trailing_pct = 0.0
+            self._demo_trade_highest = 0.0
+            self._demo_trade_lowest = float("inf")
         else:
             self._live_trade_id = None
             self._live_trade_direction = None
             self._live_trade_entry = 0.0
+            self._live_trade_initial_sl = 0.0
+            self._live_trade_trailing_pct = 0.0
+            self._live_trade_highest = 0.0
+            self._live_trade_lowest = float("inf")
 
         self.broadcaster.publish("trade_closed", close_record)
 
@@ -1064,6 +1124,87 @@ class LiveService:
             logger.error("Inference failed: %s", e)
             return None
 
+    # ── Trailing stop management ──────────────────────────────────────────
+
+    _MIN_TRAIL_PIPS = {"GBP/JPY": 5.0, "EUR/JPY": 5.0, "USD/JPY": 5.0, "GBP/USD": 5.0}
+    _PIP_SIZE_MAP = {"GBP/JPY": 0.01, "EUR/JPY": 0.01, "USD/JPY": 0.01, "GBP/USD": 0.0001}
+
+    def _update_trailing_stops(self, bid: float, ask: float) -> None:
+        """Check and update trailing stop losses for all open positions."""
+        pip = self._PIP_SIZE_MAP.get(self._pair, 0.01)
+        min_trail = self._MIN_TRAIL_PIPS.get(self._pair, 5.0) * pip
+
+        for account in ("demo", "live"):
+            if account == "demo":
+                trade_id = self._demo_trade_id
+                direction = self._demo_trade_direction
+                entry = self._demo_trade_entry
+                current_sl = self._demo_trade_sl
+                initial_sl = self._demo_trade_initial_sl
+                trailing_pct = self._demo_trade_trailing_pct
+                highest = self._demo_trade_highest
+                lowest = self._demo_trade_lowest
+                client = self._oanda_demo
+            else:
+                trade_id = self._live_trade_id
+                direction = self._live_trade_direction
+                entry = self._live_trade_entry
+                current_sl = self._live_trade_sl
+                initial_sl = self._live_trade_initial_sl
+                trailing_pct = self._live_trade_trailing_pct
+                highest = self._live_trade_highest
+                lowest = self._live_trade_lowest
+                client = self._oanda_live
+
+            if not trade_id or not client or trailing_pct <= 0 or initial_sl == 0:
+                continue
+
+            initial_risk = abs(entry - initial_sl)
+            if initial_risk <= 0:
+                continue
+
+            trail_dist = initial_risk * (1.0 - trailing_pct)
+            trail_dist = max(trail_dist, min_trail)
+
+            new_sl = current_sl
+            if direction == "BUY":
+                current_high = ask  # Best price for long
+                if current_high > highest:
+                    if account == "demo":
+                        self._demo_trade_highest = current_high
+                    else:
+                        self._live_trade_highest = current_high
+                    highest = current_high
+                candidate_sl = highest - trail_dist
+                if candidate_sl > current_sl:
+                    new_sl = round(candidate_sl, 3 if "JPY" in self._pair else 5)
+            elif direction == "SELL":
+                current_low = bid  # Best price for short
+                if current_low < lowest:
+                    if account == "demo":
+                        self._demo_trade_lowest = current_low
+                    else:
+                        self._live_trade_lowest = current_low
+                    lowest = current_low
+                candidate_sl = lowest + trail_dist
+                if candidate_sl < current_sl:
+                    new_sl = round(candidate_sl, 3 if "JPY" in self._pair else 5)
+
+            # Only modify if SL actually moved
+            if new_sl != current_sl:
+                try:
+                    client.modify_trade(trade_id, sl=new_sl)
+                    if account == "demo":
+                        self._demo_trade_sl = new_sl
+                    else:
+                        self._live_trade_sl = new_sl
+                    logger.info(
+                        "TSL updated [%s]: %s SL %.3f → %.3f (initial: %.3f)",
+                        account.upper(), trade_id, current_sl, new_sl, initial_sl,
+                    )
+                except Exception as e:
+                    logger.error("Failed to update TSL [%s] %s: %s", account, trade_id, e)
+
     # ── Stream loop ───────────────────────────────────────────────────────
 
     def _stream_loop(self) -> None:
@@ -1198,16 +1339,19 @@ class LiveService:
                                 # Auto-execute trade on both accounts
                                 self._execute_signal(signal, c.close)
 
-                # Also push current price
+                # Also push current price and update trailing stops
                 try:
                     price = self._oanda_demo.get_price(self._pair)
+                    mid = round((price["bid"] + price["ask"]) / 2, 5)
                     self.broadcaster.publish("price", {
                         "bid": price["bid"],
                         "ask": price["ask"],
                         "spread": round(price["spread"], 5),
-                        "mid": round((price["bid"] + price["ask"]) / 2, 5),
+                        "mid": mid,
                         "time": price["time"],
                     })
+                    # Update trailing stops based on current price
+                    self._update_trailing_stops(price["bid"], price["ask"])
                 except Exception:
                     pass
 

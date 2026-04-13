@@ -162,6 +162,9 @@ class TradeInfo:
     unrealized_pnl: float
     stop_loss: Optional[float]
     take_profit: Optional[float]
+    trailing_stop_loss: Optional[float] = None
+    trailing_stop_distance: Optional[float] = None
+    initial_stop_loss: Optional[float] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +446,7 @@ class OANDAClient:
             instrument = t["instrument"]
             if pair and self._to_instrument(pair) != instrument:
                 continue
+            tsl_order = t.get("trailingStopLossOrder", {})
             trades.append(TradeInfo(
                 trade_id=t["id"],
                 instrument=instrument,
@@ -451,6 +455,8 @@ class OANDAClient:
                 unrealized_pnl=float(t["unrealizedPL"]),
                 stop_loss=float(t["stopLossOrder"]["price"]) if "stopLossOrder" in t else None,
                 take_profit=float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
+                trailing_stop_loss=float(tsl_order["price"]) if tsl_order.get("price") else None,
+                trailing_stop_distance=float(tsl_order["distance"]) if tsl_order.get("distance") else None,
             ))
         return trades
 
@@ -569,6 +575,8 @@ class OANDAClient:
                 "state": t.get("state", "OPEN"),
                 "sl": float(t["stopLossOrder"]["price"]) if "stopLossOrder" in t else None,
                 "tp": float(t["takeProfitOrder"]["price"]) if "takeProfitOrder" in t else None,
+                "tsl": float(tsl_order["price"]) if tsl_order.get("price") else None,
+                "tsl_distance": float(tsl_order["distance"]) if tsl_order.get("distance") else None,
                 "direction": "BUY" if float(t.get("initialUnits", t.get("currentUnits", 0))) > 0 else "SELL",
                 "reason": reason,
             })
