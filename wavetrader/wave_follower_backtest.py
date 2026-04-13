@@ -523,6 +523,22 @@ def run_wavefollower_backtest(
                 # Signal reversal → close all + open opposite
                 if signal != Signal.HOLD and signal != pos.direction:
                     if conf >= bt_config.min_confidence:
+                        # If in profit, require trend confirmation before reversing
+                        current_pnl = 0.0
+                        if pos.direction == Signal.BUY:
+                            current_pnl = bar["close"] - pos.avg_entry
+                        else:
+                            current_pnl = pos.avg_entry - bar["close"]
+
+                        if current_pnl > 0:
+                            # BUY reversal needs UP trend, SELL needs DOWN
+                            trend_agrees = (
+                                (signal == Signal.BUY and trend_idx == 0) or
+                                (signal == Signal.SELL and trend_idx == 1)
+                            )
+                            if not trend_agrees:
+                                continue  # Skip reversal — let profitable trade run
+
                         engine.close_on_reversal(bar["close"], timestamp)
                         # Open in new direction immediately
                         engine.open_position(

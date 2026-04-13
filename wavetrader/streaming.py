@@ -679,6 +679,10 @@ class StreamingEngine:
             sig = Signal(signal_idx)
             entry = current_price
 
+            # Extract trend prediction (UP=0, DOWN=1, NEUTRAL=2)
+            trend_idx = out.get("trend_logits")
+            trend = trend_idx.argmax(-1).item() if trend_idx is not None else 2
+
             return TradeSignal(
                 signal=sig,
                 confidence=confidence,
@@ -687,6 +691,7 @@ class StreamingEngine:
                 take_profit=tp_pips,
                 trailing_stop_pct=trailing,
                 timestamp=datetime.now(timezone.utc),
+                trend=trend,
             )
 
     # ── Execution ─────────────────────────────────────────────────────────
@@ -726,8 +731,33 @@ class StreamingEngine:
             return
 
         # Opposite direction → close then immediately open (atomic reversal)
+        # But require trend confirmation when current trade is in profit
         if (self.open_trade_id and self.open_trade_direction != signal.signal) or \
            (self.live_trade_id and self.live_trade_direction != signal.signal):
+            # Check if current trade is in profit
+            current_pnl = 0.0
+            if self.open_trade_entry:
+                if self.open_trade_direction == Signal.BUY:
+                    current_pnl = candle.close - self.open_trade_entry
+                else:
+                    current_pnl = self.open_trade_entry - candle.close
+
+            # If in profit, require trend to agree with reversal direction
+            # BUY reversal needs trend=UP(0), SELL reversal needs trend=DOWN(1)
+            if current_pnl > 0:
+                trend = getattr(signal, 'trend', 2)
+                trend_agrees = (
+                    (signal.signal == Signal.BUY and trend == 0) or   # UP trend for BUY
+                    (signal.signal == Signal.SELL and trend == 1)     # DOWN trend for SELL
+                )
+                if not trend_agrees:
+                    logger.info(
+                        "Reversal blocked: trade in profit (%.3f pips), "
+                        "trend=%d does not confirm %s — letting position run",
+                        current_pnl, trend, signal.signal.name,
+                    )
+                    return
+
             self._close_position("Signal reversal")
             self._open_position(signal, candle)
             return
@@ -998,22 +1028,22 @@ class StreamingEngine:
         min_trail = DEFAULT_RISK_SCALING.min_trail_pips * pip
 
         if self.open_trade_direction == Signal.BUY:
+            # Only recalculate trailing SL when a new peak forms (matches backtest)
             if candle.high > self.open_trade_peak:
                 self.open_trade_peak = candle.high
-            entry = self.open_trade_entry or candle.close
-            initial_risk = entry - (self.open_trade_initial_sl or entry)
-            if initial_risk <= 0:
-                return
-            trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
-            trail_distance = max(trail_distance, min_trail)
-            new_sl = self.open_trade_peak - trail_distance
-            if self.open_trade_sl and new_sl > self.open_trade_sl:
-                self.open_trade_sl = new_sl
-                if self.open_trade_id:
-                    self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
-                if self.live_trade_id and self.oanda_live:
-                    self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
-                logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
+                entry = self.open_trade_entry or candle.close
+                initial_risk = entry - (self.open_trade_initial_sl or entry)
+                if initial_risk > 0:
+                    trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
+                    trail_distance = max(trail_distance, min_trail)
+                    new_sl = self.open_trade_peak - trail_distance
+                    if self.open_trade_sl and new_sl > self.open_trade_sl:
+                        self.open_trade_sl = new_sl
+                        if self.open_trade_id:
+                            self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                        if self.live_trade_id and self.oanda_live:
+                            self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                        logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
 
             # Check if SL hit
             if self.open_trade_sl and candle.low <= self.open_trade_sl:
@@ -1021,22 +1051,22 @@ class StreamingEngine:
                 return
 
         else:  # SELL
+            # Only recalculate trailing SL when a new peak forms (matches backtest)
             if candle.low < self.open_trade_peak or self.open_trade_peak == 0:
                 self.open_trade_peak = candle.low
-            entry = self.open_trade_entry or candle.close
-            initial_risk = (self.open_trade_initial_sl or entry) - entry
-            if initial_risk <= 0:
-                return
-            trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
-            trail_distance = max(trail_distance, min_trail)
-            new_sl = self.open_trade_peak + trail_distance
-            if self.open_trade_sl and new_sl < self.open_trade_sl:
-                self.open_trade_sl = new_sl
-                if self.open_trade_id:
-                    self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
-                if self.live_trade_id and self.oanda_live:
-                    self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
-                logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
+                entry = self.open_trade_entry or candle.close
+                initial_risk = (self.open_trade_initial_sl or entry) - entry
+                if initial_risk > 0:
+                    trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
+                    trail_distance = max(trail_distance, min_trail)
+                    new_sl = self.open_trade_peak + trail_distance
+                    if self.open_trade_sl and new_sl < self.open_trade_sl:
+                        self.open_trade_sl = new_sl
+                        if self.open_trade_id:
+                            self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                        if self.live_trade_id and self.oanda_live:
+                            self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                        logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
 
             # Check if SL hit
             if self.open_trade_sl and candle.high >= self.open_trade_sl:

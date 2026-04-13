@@ -32,7 +32,7 @@ class TradeSignal:
     trailing_stop_pct: float  # fraction of move to trail
     timestamp: datetime
     exit_mode: str = "tp_sl"  # "tp_sl" (v1/v2) or "opposite_signal" (v3)
-
+    trend: int = 2            # 0=UP, 1=DOWN, 2=NEUTRAL from trend_logits
 
 @dataclass
 class Trade:
