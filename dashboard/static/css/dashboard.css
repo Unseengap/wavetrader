@@ -1278,14 +1278,22 @@ body {
     margin-right: 0.3rem;
 }
 
-/* ═══ Live Layout (no left sidebar) ══════════════════════════════════════ */
+/* ═══ Live Layout (with left config sidebar) ═════════════════════════════ */
 
 .wt-layout-live {
-    grid-template-columns: 1fr 280px;
+    grid-template-columns: 300px 1fr 280px;
+}
+
+.wt-layout-live.left-collapsed {
+    grid-template-columns: 0px 1fr 280px;
 }
 
 .wt-layout-live.right-collapsed {
-    grid-template-columns: 1fr 0;
+    grid-template-columns: 300px 1fr 0;
+}
+
+.wt-layout-live.left-collapsed.right-collapsed {
+    grid-template-columns: 0px 1fr 0;
 }
 
 /* ═══ Sub-tabs (inside Trades tab) ═══════════════════════════════════════ */
@@ -1716,4 +1724,250 @@ body {
 .replay-scrubber::-moz-range-track {
     height: 4px;
     background: transparent;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LLM Arbiter Panel
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.wt-arbiter-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--wt-bg-secondary);
+    border-bottom: 1px solid var(--wt-border);
+}
+
+.wt-arbiter-mode-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    background: rgba(139, 92, 246, 0.15);
+    color: #a371f7;
+}
+
+.wt-arbiter-stats-bar {
+    display: flex;
+    gap: 2px;
+    padding: 6px 12px;
+    background: var(--wt-bg-card);
+    border-bottom: 1px solid var(--wt-border);
+    overflow-x: auto;
+}
+
+.wt-arbiter-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 70px;
+    padding: 4px 8px;
+}
+
+.wt-arbiter-stat-label {
+    font-size: 0.62rem;
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+.wt-arbiter-stat-value {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--wt-text);
+    font-family: monospace;
+}
+
+/* Decision List */
+.wt-arbiter-decisions {
+    overflow-y: auto;
+    flex: 1;
+    padding: 4px 0;
+}
+
+.wt-arbiter-decision-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--wt-border);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.wt-arbiter-decision-row:hover {
+    background: var(--wt-bg-input);
+}
+
+.wt-arbiter-decision-row.veto {
+    border-left: 3px solid var(--wt-red);
+}
+
+.wt-arbiter-decision-row.override {
+    border-left: 3px solid var(--wt-yellow);
+}
+
+.wt-arbiter-decision-row.approve {
+    border-left: 3px solid var(--wt-green);
+}
+
+.wt-arbiter-decision-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.wt-arbiter-decision-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-left: 4px;
+}
+
+.wt-arbiter-action-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.wt-arbiter-action-badge.approve {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--wt-green);
+}
+
+.wt-arbiter-action-badge.veto {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--wt-red);
+}
+
+.wt-arbiter-action-badge.override {
+    background: rgba(227, 176, 35, 0.15);
+    color: var(--wt-yellow);
+}
+
+.wt-arbiter-signal-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+
+.wt-arbiter-signal-badge.buy {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--wt-green);
+}
+
+.wt-arbiter-signal-badge.sell {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--wt-red);
+}
+
+.wt-arbiter-signal-badge.hold {
+    background: rgba(139, 148, 158, 0.15);
+    color: var(--wt-text-muted);
+}
+
+.wt-pnl-positive {
+    color: var(--wt-green);
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+
+.wt-pnl-negative {
+    color: var(--wt-red);
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+
+/* Detail Modal */
+.wt-arbiter-detail-modal {
+    display: none;
+    flex-direction: column;
+    position: absolute;
+    inset: 0;
+    background: var(--wt-bg-card);
+    z-index: 10;
+    overflow-y: auto;
+}
+
+.wt-arbiter-detail-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--wt-bg-secondary);
+    border-bottom: 1px solid var(--wt-border);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.wt-arbiter-detail-body {
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.wt-arbiter-detail-section {
+    background: var(--wt-bg-secondary);
+    border: 1px solid var(--wt-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.wt-arbiter-detail-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wt-arbiter-reasoning-text {
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--wt-text);
+    white-space: pre-wrap;
+}
+
+.wt-arbiter-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+}
+
+.wt-arbiter-detail-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.wt-arbiter-detail-label {
+    font-size: 0.65rem;
+    color: var(--wt-text-muted);
+    text-transform: uppercase;
+}
+
+.wt-arbiter-detail-value {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--wt-text);
+    font-family: monospace;
+}
+
+.wt-arbiter-outcome {
+    padding: 8px 0;
 }

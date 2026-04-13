@@ -189,6 +189,25 @@ class StreamingEngine:
         self.model.to(self.device)
         self.model.eval()
 
+        # ── LLM Arbiter (optional) ───────────────────────────────────────
+        self._arbiter = None
+        self._decision_log = None
+        arbiter_enabled = os.environ.get("LLM_ARBITER_ENABLED", "false").lower() == "true"
+        if arbiter_enabled:
+            try:
+                from .llm_arbiter import LLMArbiter, LLMArbiterConfig
+                from .llm_logger import get_decision_log
+                arbiter_cfg = LLMArbiterConfig(
+                    enabled=True,
+                    authority_mode=os.environ.get("LLM_AUTHORITY_MODE", "advisory"),
+                    model=os.environ.get("LLM_MODEL", "gemini-2.5-flash"),
+                )
+                self._arbiter = LLMArbiter(arbiter_cfg)
+                self._decision_log = get_decision_log()
+                logger.info("LLM Arbiter enabled (mode=%s)", arbiter_cfg.authority_mode)
+            except Exception as e:
+                logger.warning("LLM Arbiter init failed: %s", e)
+
     # ── Warmup ────────────────────────────────────────────────────────────
 
     def warmup(self, checkpoint_path: Optional[str] = None) -> None:
@@ -421,6 +440,106 @@ class StreamingEngine:
 
         if self.monitor:
             self.monitor.record_inference(latency_ms, trade_signal)
+
+        # ── LLM Arbiter evaluation ────────────────────────────────────────
+        if self._arbiter and self._arbiter.config.enabled:
+            try:
+                from .llm_arbiter import ArbiterContext
+                from .calendar import get_calendar
+
+                cal = get_calendar()
+                events = cal.get_upcoming(self.pair, hours_ahead=4)
+                has_high = any(e.impact == "high" for e in events)
+
+                # Determine session
+                hour = candle.timestamp.hour if candle.timestamp else 0
+                if 0 <= hour < 9:
+                    session = "Tokyo"
+                elif 7 <= hour < 16:
+                    session = "London"
+                elif 12 <= hour < 21:
+                    session = "New York"
+                else:
+                    session = "Off-hours"
+
+                # Build recent bars
+                entry_tf = self.config.entry_timeframe
+                recent = []
+                if entry_tf in self._history and len(self._history[entry_tf]) > 0:
+                    df = self._history[entry_tf].tail(30)
+                    for _, row in df.iterrows():
+                        recent.append({
+                            "time": str(row.get("date", "")),
+                            "open": float(row.get("open", 0)),
+                            "high": float(row.get("high", 0)),
+                            "low": float(row.get("low", 0)),
+                            "close": float(row.get("close", 0)),
+                            "volume": int(row.get("volume", 0)),
+                        })
+
+                win_rate = self.winning_trades / max(1, self.total_trades)
+                ctx = ArbiterContext(
+                    signal=trade_signal.signal.name,
+                    confidence=trade_signal.confidence,
+                    alignment=0.0,
+                    sl_pips=trade_signal.stop_loss,
+                    tp_pips=trade_signal.take_profit,
+                    entry_price=candle.close,
+                    model_id="streaming",
+                    pair=self.pair,
+                    timeframe=entry_tf,
+                    recent_bars=recent,
+                    balance=self.balance,
+                    unrealized_pnl=0.0,
+                    max_drawdown=self.max_drawdown,
+                    win_rate=win_rate,
+                    total_trades=self.total_trades,
+                    calendar_events=[e.to_dict() for e in events],
+                    has_high_impact_event=has_high,
+                    current_session=session,
+                )
+                decision = self._arbiter.evaluate(ctx)
+
+                # Apply decision
+                if decision.action == "VETO":
+                    logger.info("LLM Arbiter VETOED %s: %s", trade_signal.signal.name, decision.reasoning[:80])
+                    trade_signal = TradeSignal(
+                        signal=Signal.HOLD,
+                        confidence=trade_signal.confidence,
+                        entry_price=trade_signal.entry_price,
+                        stop_loss=trade_signal.stop_loss,
+                        take_profit=trade_signal.take_profit,
+                        trailing_stop_pct=trade_signal.trailing_stop_pct,
+                        timestamp=trade_signal.timestamp,
+                        exit_mode=trade_signal.exit_mode,
+                    )
+                elif decision.action == "OVERRIDE" and decision.modified_signal:
+                    sig_map = {"BUY": Signal.BUY, "SELL": Signal.SELL, "HOLD": Signal.HOLD}
+                    new_sig = sig_map.get(decision.modified_signal, trade_signal.signal)
+                    new_conf = max(0.0, min(1.0, trade_signal.confidence + decision.confidence_adjustment))
+                    trade_signal = TradeSignal(
+                        signal=new_sig,
+                        confidence=new_conf,
+                        entry_price=trade_signal.entry_price,
+                        stop_loss=decision.modified_sl_pips or trade_signal.stop_loss,
+                        take_profit=decision.modified_tp_pips or trade_signal.take_profit,
+                        trailing_stop_pct=trade_signal.trailing_stop_pct,
+                        timestamp=trade_signal.timestamp,
+                        exit_mode=trade_signal.exit_mode,
+                    )
+                    logger.info("LLM Arbiter OVERRIDE: %s", decision.reasoning[:80])
+
+                # Log decision
+                if self._decision_log:
+                    from dataclasses import asdict
+                    dec_dict = asdict(decision)
+                    dec_dict["model_id"] = "streaming"
+                    dec_dict["pair"] = self.pair
+                    dec_dict["trade_placed"] = trade_signal.signal != Signal.HOLD
+                    self._decision_log.log_decision(dec_dict)
+
+            except Exception as e:
+                logger.error("LLM Arbiter failed (proceeding with original signal): %s", e)
 
         # Execute signal
         self._execute_signal(trade_signal, candle)

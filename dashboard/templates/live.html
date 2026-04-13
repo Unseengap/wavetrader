@@ -8,6 +8,11 @@
 
 <!-- ═══ Navbar ══════════════════════════════════════════════════════════════ -->
 <nav class="wt-navbar">
+    <!-- Left sidebar toggle -->
+    <button class="wt-sidebar-toggle" id="toggle-left-sidebar" title="Toggle config panel [">
+        <i class="bi bi-layout-sidebar-inset"></i>
+    </button>
+
     <div class="wt-brand">
         <i class="bi bi-activity"></i> WaveTrader
     </div>
@@ -84,6 +89,106 @@
 <!-- ═══ Main Layout ════════════════════════════════════════════════════════ -->
 <div class="wt-layout wt-layout-live" id="wt-layout">
 
+    <!-- ─── Left Sidebar: Live Configuration ───────────────────────────── -->
+    <div class="wt-sidebar-left" id="sidebar-left">
+        <div class="wt-card-header">
+            <i class="bi bi-sliders"></i> Live Configuration
+        </div>
+
+        <!-- Capital & Risk -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Capital & Risk</div>
+
+            <div class="wt-field">
+                <label for="live-cfg-pair">Currency Pair</label>
+                <select id="live-cfg-pair">
+                    <option value="GBP/JPY">GBP/JPY</option>
+                </select>
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    Risk per Trade
+                    <span class="wt-range-value" data-for="live-cfg-risk-per-trade" data-suffix="%">10%</span>
+                </label>
+                <input type="range" id="live-cfg-risk-per-trade" min="0.5" max="25" step="0.25" value="10">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    Min Confidence
+                    <span class="wt-range-value" data-for="live-cfg-min-confidence" data-suffix="%">65%</span>
+                </label>
+                <input type="range" id="live-cfg-min-confidence" min="30" max="95" step="5" value="65">
+            </div>
+        </div>
+
+        <!-- Circuit Breakers -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Circuit Breakers</div>
+
+            <div class="wt-field">
+                <label for="live-cfg-atr-halt">ATR Halt Multiplier</label>
+                <input type="number" id="live-cfg-atr-halt" value="3.0" min="1" max="10" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    DD Risk Reduction
+                    <span class="wt-range-value" data-for="live-cfg-dd-threshold" data-suffix="%">10%</span>
+                </label>
+                <input type="range" id="live-cfg-dd-threshold" min="2" max="25" step="1" value="10">
+            </div>
+        </div>
+
+        <!-- Friction Model -->
+        <div class="wt-config-section">
+            <div class="wt-config-section-title">Friction Model</div>
+
+            <div class="wt-field">
+                <label for="live-cfg-slip-min">Slippage Min (pips)</label>
+                <input type="number" id="live-cfg-slip-min" value="0.5" min="0" step="0.1">
+            </div>
+
+            <div class="wt-field">
+                <label for="live-cfg-slip-max">Slippage Max (pips)</label>
+                <input type="number" id="live-cfg-slip-max" value="3.0" min="0" step="0.1">
+            </div>
+
+            <div class="wt-field">
+                <label for="live-cfg-spread-offhours">Off-hours Extra Spread</label>
+                <input type="number" id="live-cfg-spread-offhours" value="2.5" min="0" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label>
+                    News Spike Prob
+                    <span class="wt-range-value" data-for="live-cfg-news-prob" data-suffix="%">5%</span>
+                </label>
+                <input type="range" id="live-cfg-news-prob" min="0" max="20" step="1" value="5">
+            </div>
+
+            <div class="wt-field">
+                <label for="live-cfg-news-extra">News Spike Extra (pips)</label>
+                <input type="number" id="live-cfg-news-extra" value="5.0" min="0" step="0.5">
+            </div>
+
+            <div class="wt-field">
+                <label for="live-cfg-lot-cap">Max Lot Size</label>
+                <input type="number" id="live-cfg-lot-cap" value="2.0" min="0.1" step="0.1">
+            </div>
+        </div>
+
+        <!-- Buttons -->
+        <button id="btn-apply-live-config" class="wt-btn-primary" style="margin-bottom:0.5rem">
+            <span class="btn-text"><i class="bi bi-check-circle"></i> Apply Config</span>
+            <div class="wt-spinner"></div>
+        </button>
+        <button id="btn-reset-live-defaults" class="wt-btn-secondary">
+            <i class="bi bi-arrow-counterclockwise"></i> Reset to Defaults
+        </button>
+    </div>
+
     <!-- ─── Center: Charts + Central Panel ─────────────────────────────── -->
     <div class="wt-main" id="wt-main">
         <!-- Price Chart Legend -->
@@ -118,6 +223,9 @@
                 </button>
                 <button class="wt-tab" data-live-tab="live-signals">
                     <i class="bi bi-lightning-charge"></i> Signals
+                </button>
+                <button class="wt-tab" data-live-tab="live-arbiter">
+                    <i class="bi bi-robot"></i> LLM Arbiter
                 </button>
             </div>
 
@@ -277,6 +385,140 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- ═══ LLM Arbiter Tab ════════════════════════════════ -->
+                <div id="tab-live-arbiter" class="wt-live-tab-pane">
+                    <!-- Arbiter Header Bar -->
+                    <div class="wt-arbiter-header">
+                        <div style="display:flex;align-items:center;gap:10px">
+                            <i class="bi bi-robot" style="font-size:1.1rem;color:var(--wt-purple, #a371f7)"></i>
+                            <span style="font-weight:600;font-size:0.82rem">LLM Signal Arbiter</span>
+                            <span id="arbiter-status-badge" class="wt-arbiter-mode-badge" style="padding:2px 8px;border-radius:4px;font-size:0.68rem;font-weight:600;background:rgba(139,92,246,0.15);color:#a371f7">ADVISORY</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <select id="arbiter-mode-select" style="font-size:0.72rem;padding:2px 8px;background:var(--wt-bg-input);color:var(--wt-text);border:1px solid var(--wt-border);border-radius:4px">
+                                <option value="advisory">Advisory</option>
+                                <option value="veto">Veto</option>
+                                <option value="override">Override</option>
+                            </select>
+                            <label style="font-size:0.72rem;display:flex;align-items:center;gap:4px;cursor:pointer">
+                                <input type="checkbox" id="arbiter-enabled-toggle"> Enabled
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Trial Stats Bar -->
+                    <div class="wt-arbiter-stats-bar" id="arbiter-stats-bar">
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Decisions</span>
+                            <span class="wt-arbiter-stat-value" id="arbiter-stat-total">0</span>
+                        </div>
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Approved</span>
+                            <span class="wt-arbiter-stat-value" style="color:var(--wt-green)" id="arbiter-stat-approved">0</span>
+                        </div>
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Vetoed</span>
+                            <span class="wt-arbiter-stat-value" style="color:var(--wt-red, #f85149)" id="arbiter-stat-vetoed">0</span>
+                        </div>
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Overrides</span>
+                            <span class="wt-arbiter-stat-value" style="color:var(--wt-yellow)" id="arbiter-stat-overrides">0</span>
+                        </div>
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Veto Saved $</span>
+                            <span class="wt-arbiter-stat-value" style="color:var(--wt-green)" id="arbiter-stat-veto-saved">0</span>
+                        </div>
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Veto Missed $</span>
+                            <span class="wt-arbiter-stat-value" style="color:var(--wt-red, #f85149)" id="arbiter-stat-veto-missed">0</span>
+                        </div>
+                        <div class="wt-arbiter-stat">
+                            <span class="wt-arbiter-stat-label">Avg Latency</span>
+                            <span class="wt-arbiter-stat-value" id="arbiter-stat-latency">0ms</span>
+                        </div>
+                    </div>
+
+                    <!-- Decision List -->
+                    <div class="wt-arbiter-decisions" id="arbiter-decisions-list">
+                        <div class="wt-empty-state" style="padding:2rem">
+                            <i class="bi bi-robot" style="font-size:2rem;color:var(--wt-text-muted);opacity:0.3"></i>
+                            <p style="margin-top:0.5rem">No arbiter decisions yet. Enable the arbiter and wait for signals.</p>
+                        </div>
+                    </div>
+
+                    <!-- Decision Detail Modal (expands on click) -->
+                    <div class="wt-arbiter-detail-modal" id="arbiter-detail-modal" style="display:none">
+                        <div class="wt-arbiter-detail-header">
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span id="arbiter-detail-action-badge" class="wt-arbiter-action-badge">APPROVE</span>
+                                <span id="arbiter-detail-signal" style="font-weight:600"></span>
+                                <span id="arbiter-detail-pair" style="color:var(--wt-text-muted);font-size:0.75rem"></span>
+                            </div>
+                            <button id="arbiter-detail-close" style="background:none;border:none;color:var(--wt-text-muted);cursor:pointer;font-size:1.1rem">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </div>
+                        <div class="wt-arbiter-detail-body">
+                            <!-- Reasoning -->
+                            <div class="wt-arbiter-detail-section">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-chat-text"></i> LLM Reasoning</div>
+                                <div id="arbiter-detail-reasoning" class="wt-arbiter-reasoning-text"></div>
+                            </div>
+                            <!-- Risk Notes -->
+                            <div class="wt-arbiter-detail-section" id="arbiter-detail-risk-section" style="display:none">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-exclamation-triangle"></i> Risk Notes</div>
+                                <div id="arbiter-detail-risk-notes" class="wt-arbiter-reasoning-text" style="color:var(--wt-yellow)"></div>
+                            </div>
+                            <!-- Signal Details -->
+                            <div class="wt-arbiter-detail-section">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-lightning-charge"></i> Signal Details</div>
+                                <div class="wt-arbiter-detail-grid">
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">Original Signal</span>
+                                        <span id="arbiter-detail-orig-signal" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">Confidence</span>
+                                        <span id="arbiter-detail-confidence" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">Entry Price</span>
+                                        <span id="arbiter-detail-entry" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">Conf Adjustment</span>
+                                        <span id="arbiter-detail-conf-adj" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">Trade Placed</span>
+                                        <span id="arbiter-detail-trade-placed" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">LLM Model</span>
+                                        <span id="arbiter-detail-llm-model" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                    <div class="wt-arbiter-detail-item">
+                                        <span class="wt-arbiter-detail-label">Latency</span>
+                                        <span id="arbiter-detail-latency" class="wt-arbiter-detail-value"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Outcome Simulation -->
+                            <div class="wt-arbiter-detail-section">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-graph-up"></i> Outcome Tracker</div>
+                                <div id="arbiter-detail-outcome" class="wt-arbiter-outcome">
+                                    <span style="color:var(--wt-text-muted);font-size:0.75rem">Outcome will appear after trade closes or simulation period ends</span>
+                                </div>
+                            </div>
+                            <!-- Calendar Context -->
+                            <div class="wt-arbiter-detail-section" id="arbiter-detail-calendar-section" style="display:none">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-calendar-event"></i> Calendar Events</div>
+                                <div id="arbiter-detail-calendar" style="font-size:0.75rem"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div><!-- /tab-live-arbiter -->
             </div>
         </div><!-- /central-panel -->
     </div>
@@ -373,5 +615,6 @@
 <script src="{{ url_for('static', filename='js/chart-manager.js') }}"></script>
 <script src="{{ url_for('static', filename='js/log-terminal.js') }}"></script>
 <script src="{{ url_for('static', filename='js/live-panel.js') }}"></script>
+<script src="{{ url_for('static', filename='js/arbiter-panel.js') }}"></script>
 <script src="{{ url_for('static', filename='js/live-init.js') }}"></script>
 {% endblock %}

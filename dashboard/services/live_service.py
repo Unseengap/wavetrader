@@ -168,6 +168,24 @@ class LiveService:
         self._live_trade_sl: float = 0.0
         self._live_trade_tp: float = 0.0
 
+        # ── LLM Arbiter ──────────────────────────────────────────────────
+        from wavetrader.llm_arbiter import LLMArbiter, LLMArbiterConfig, ArbiterContext
+        from wavetrader.calendar import get_calendar
+        from wavetrader.llm_logger import get_decision_log
+
+        arbiter_enabled = os.environ.get("LLM_ARBITER_ENABLED", "false").lower() == "true"
+        arbiter_mode = os.environ.get("LLM_AUTHORITY_MODE", "advisory")
+        arbiter_model = os.environ.get("LLM_MODEL", "gemini-2.5-flash")
+        self._arbiter_config = LLMArbiterConfig(
+            enabled=arbiter_enabled,
+            authority_mode=arbiter_mode,
+            model=arbiter_model,
+        )
+        self._arbiter = LLMArbiter(self._arbiter_config)
+        self._calendar = get_calendar()
+        self._decision_log = get_decision_log()
+        self._arbiter_decisions: List[dict] = []  # recent decisions for dashboard
+
     # ── Public API ────────────────────────────────────────────────────────
 
     @property
@@ -479,6 +497,51 @@ class LiveService:
 
     # ── Auto-Trade (always on) ───────────────────────────────────
 
+    def update_config(self, cfg: dict) -> dict:
+        """Update live trading configuration at runtime. Returns the new config."""
+        if "min_confidence" in cfg:
+            self._min_confidence = float(cfg["min_confidence"])
+        if "risk_per_trade" in cfg:
+            self._risk_per_trade = float(cfg["risk_per_trade"])
+        if "atr_halt_multiplier" in cfg:
+            self._atr_halt_multiplier = float(cfg["atr_halt_multiplier"])
+        if "drawdown_reduce_threshold" in cfg:
+            self._drawdown_reduce_threshold = float(cfg["drawdown_reduce_threshold"])
+        if "friction" in cfg:
+            f = cfg["friction"]
+            if "slippage_min" in f:
+                self._friction_slippage_min = float(f["slippage_min"])
+            if "slippage_max" in f:
+                self._friction_slippage_max = float(f["slippage_max"])
+            if "spread_offhours_extra" in f:
+                self._friction_spread_offhours = float(f["spread_offhours_extra"])
+            if "news_spike_prob" in f:
+                self._friction_news_prob = float(f["news_spike_prob"])
+            if "news_spike_extra" in f:
+                self._friction_news_extra = float(f["news_spike_extra"])
+            if "lot_cap" in f:
+                self._friction_lot_cap = float(f["lot_cap"])
+        logger.info("Live config updated: conf=%.2f risk=%.2f", self._min_confidence, self._risk_per_trade)
+        return self.live_config
+
+    @property
+    def live_config(self) -> dict:
+        """Return the current live trading configuration."""
+        return {
+            "min_confidence": self._min_confidence,
+            "risk_per_trade": self._risk_per_trade,
+            "atr_halt_multiplier": getattr(self, "_atr_halt_multiplier", 3.0),
+            "drawdown_reduce_threshold": getattr(self, "_drawdown_reduce_threshold", 0.10),
+            "friction": {
+                "slippage_min": getattr(self, "_friction_slippage_min", 0.5),
+                "slippage_max": getattr(self, "_friction_slippage_max", 3.0),
+                "spread_offhours_extra": getattr(self, "_friction_spread_offhours", 2.5),
+                "news_spike_prob": getattr(self, "_friction_news_prob", 0.05),
+                "news_spike_extra": getattr(self, "_friction_news_extra", 5.0),
+                "lot_cap": getattr(self, "_friction_lot_cap", 2.0),
+            },
+        }
+
     @property
     def auto_trade_status(self) -> dict:
         return {
@@ -494,6 +557,118 @@ class LiveService:
             "recent_trades": self._trade_log[-10:],
             "recent_signals": self._signal_history[-10:],
         }
+
+    # ── LLM Arbiter helpers ───────────────────────────────────────────
+
+    def _evaluate_with_arbiter(
+        self,
+        signal_dict: dict,
+        tf_history: dict,
+        current_price: float,
+    ):
+        """Build ArbiterContext and call the LLM arbiter."""
+        from wavetrader.llm_arbiter import ArbiterContext
+
+        # Determine current session
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        hour = now.hour
+        if 0 <= hour < 9:
+            session = "Tokyo"
+        elif 7 <= hour < 16:
+            session = "London"
+        elif 12 <= hour < 21:
+            session = "New York"
+        else:
+            session = "Off-hours"
+
+        # Get recent bars from entry timeframe
+        entry_bars = tf_history.get(self._timeframe, [])[-self._arbiter_config.recent_bars_count:]
+
+        # Calendar events
+        events = self._calendar.get_upcoming(self._pair, hours_ahead=4)
+        has_high_impact = any(e.impact == "high" for e in events)
+
+        # Portfolio state
+        balance = 0.0
+        unrealized_pnl = 0.0
+        try:
+            acct = self.get_account()
+            balance = acct.get("balance", 0)
+            unrealized_pnl = acct.get("unrealized_pnl", 0)
+        except Exception:
+            pass
+
+        # Open positions
+        open_positions = []
+        try:
+            open_positions = self.get_open_trades()
+        except Exception:
+            pass
+
+        # Win rate from trade log
+        total = len(self._trade_log)
+        wins = sum(1 for t in self._trade_log if float(t.get("realized_pl", 0)) > 0)
+        win_rate = wins / total if total > 0 else 0
+
+        ctx = ArbiterContext(
+            signal=signal_dict.get("signal", "HOLD"),
+            confidence=signal_dict.get("confidence", 0),
+            alignment=signal_dict.get("alignment", 0),
+            sl_pips=signal_dict.get("sl_pips", 0),
+            tp_pips=signal_dict.get("tp_pips", 0),
+            entry_price=current_price,
+            model_id=self.model_id,
+            pair=self._pair,
+            timeframe=self._timeframe,
+            recent_bars=entry_bars,
+            balance=balance,
+            unrealized_pnl=unrealized_pnl,
+            open_positions=[p for p in open_positions],
+            max_drawdown=0.0,
+            win_rate=win_rate,
+            total_trades=total,
+            recent_trades=self._trade_log[-self._arbiter_config.recent_trades_count:],
+            calendar_events=[e.to_dict() for e in events],
+            has_high_impact_event=has_high_impact,
+            current_session=session,
+        )
+
+        return self._arbiter.evaluate(ctx)
+
+    @property
+    def arbiter_status(self) -> dict:
+        """Return current LLM arbiter configuration and stats."""
+        stats = self._decision_log.get_stats()
+        return {
+            "enabled": self._arbiter_config.enabled,
+            "authority_mode": self._arbiter_config.authority_mode,
+            "model": self._arbiter_config.model,
+            "escalation_model": self._arbiter_config.escalation_model,
+            "stats": stats,
+        }
+
+    def get_arbiter_decisions(self, count: int = 50) -> list:
+        """Return recent LLM arbiter decisions."""
+        return self._decision_log.get_recent(count)
+
+    def update_arbiter_config(self, cfg: dict) -> dict:
+        """Update arbiter configuration at runtime."""
+        if "enabled" in cfg:
+            self._arbiter_config.enabled = cfg["enabled"]
+        if "authority_mode" in cfg:
+            mode = cfg["authority_mode"]
+            if mode in ("advisory", "veto", "override"):
+                self._arbiter_config.authority_mode = mode
+        if "model" in cfg:
+            self._arbiter_config.model = cfg["model"]
+        logger.info(
+            "Arbiter config updated: enabled=%s mode=%s model=%s",
+            self._arbiter_config.enabled,
+            self._arbiter_config.authority_mode,
+            self._arbiter_config.model,
+        )
+        return self.arbiter_status
 
     def _execute_signal(self, signal_dict: dict, current_price: float) -> None:
         """Execute a trade based on model signal on both accounts."""
@@ -994,6 +1169,31 @@ class LiveService:
                             # Run inference
                             signal = self._run_inference(tf_history)
                             if signal:
+                                # ── LLM Arbiter evaluation ────────────
+                                arbiter_decision = None
+                                if self._arbiter_config.enabled:
+                                    try:
+                                        arbiter_decision = self._evaluate_with_arbiter(
+                                            signal, tf_history, c.close,
+                                        )
+                                        # Apply decision to signal
+                                        signal = self._arbiter.apply_decision(
+                                            signal, arbiter_decision,
+                                        )
+                                        # Broadcast arbiter decision via SSE
+                                        from dataclasses import asdict
+                                        dec_dict = asdict(arbiter_decision)
+                                        dec_dict["trade_placed"] = signal.get("signal") != "HOLD"
+                                        self.broadcaster.publish("arbiter", dec_dict)
+                                        # Log it
+                                        dec_dict["model_id"] = self.model_id
+                                        dec_dict["pair"] = self._pair
+                                        self._decision_log.log_decision(dec_dict)
+                                        self._arbiter_decisions.append(dec_dict)
+                                        self._arbiter_decisions = self._arbiter_decisions[-100:]
+                                    except Exception as e:
+                                        logger.error("Arbiter evaluation failed: %s", e)
+
                                 self.broadcaster.publish("signal", signal)
                                 # Auto-execute trade on both accounts
                                 self._execute_signal(signal, c.close)

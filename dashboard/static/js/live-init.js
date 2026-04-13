@@ -32,6 +32,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupLiveSubtabs();
     setupKeyboardShortcuts();
 
+    // Init live config panel
+    setupLiveConfigPanel();
+    await loadLiveConfig();
+
     // Init footer log terminal
     initLogTerminal();
 
@@ -189,6 +193,19 @@ function setupLiveSubtabs() {
 
 function setupLiveSidebarToggle() {
     const layout = document.getElementById('wt-layout');
+
+    // Left sidebar toggle
+    const leftBtn = document.getElementById('toggle-left-sidebar');
+    if (leftBtn) {
+        leftBtn.addEventListener('click', () => {
+            layout.classList.toggle('left-collapsed');
+            leftBtn.classList.toggle('active', layout.classList.contains('left-collapsed'));
+            saveLayoutState();
+            triggerChartResize();
+        });
+    }
+
+    // Right sidebar toggle
     const rightBtn = document.getElementById('toggle-right-sidebar');
     if (rightBtn) {
         rightBtn.addEventListener('click', () => {
@@ -209,6 +226,11 @@ function restoreLayoutState() {
         const state = JSON.parse(raw);
         const layout = document.getElementById('wt-layout');
 
+        if (state.leftCollapsed) {
+            layout.classList.add('left-collapsed');
+            const btn = document.getElementById('toggle-left-sidebar');
+            if (btn) btn.classList.add('active');
+        }
         if (state.rightCollapsed) {
             layout.classList.add('right-collapsed');
             const btn = document.getElementById('toggle-right-sidebar');
@@ -317,6 +339,11 @@ function setupDragHandle() {
 function setupKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+        if (e.key === '[') {
+            e.preventDefault();
+            const btn = document.getElementById('toggle-left-sidebar');
+            if (btn) btn.click();
+        }
         if (e.key === ']') {
             e.preventDefault();
             const btn = document.getElementById('toggle-right-sidebar');
@@ -337,4 +364,149 @@ function showToast(message, type = 'info') {
         toast.style.transition = 'opacity 0.3s';
         setTimeout(() => toast.remove(), 300);
     }, 4000);
+}
+
+// ── Live Config Panel ──────────────────────────────────────────────────────
+
+const LIVE_CONFIG_DEFAULTS = {
+    min_confidence: 0.65,
+    risk_per_trade: 0.10,
+    atr_halt_multiplier: 3.0,
+    drawdown_reduce_threshold: 0.10,
+    friction: {
+        slippage_min: 0.5,
+        slippage_max: 3.0,
+        spread_offhours_extra: 2.5,
+        news_spike_prob: 0.05,
+        news_spike_extra: 5.0,
+        lot_cap: 2.0,
+    },
+};
+
+function _liveField(id) {
+    const el = document.getElementById(id);
+    return el ? el.value : '';
+}
+
+function collectLiveConfig() {
+    return {
+        min_confidence: parseFloat(_liveField('live-cfg-min-confidence')) / 100,
+        risk_per_trade: parseFloat(_liveField('live-cfg-risk-per-trade')) / 100,
+        atr_halt_multiplier: parseFloat(_liveField('live-cfg-atr-halt')),
+        drawdown_reduce_threshold: parseFloat(_liveField('live-cfg-dd-threshold')) / 100,
+        friction: {
+            slippage_min: parseFloat(_liveField('live-cfg-slip-min')),
+            slippage_max: parseFloat(_liveField('live-cfg-slip-max')),
+            spread_offhours_extra: parseFloat(_liveField('live-cfg-spread-offhours')),
+            news_spike_prob: parseFloat(_liveField('live-cfg-news-prob')) / 100,
+            news_spike_extra: parseFloat(_liveField('live-cfg-news-extra')),
+            lot_cap: parseFloat(_liveField('live-cfg-lot-cap')),
+        },
+    };
+}
+
+function populateLiveConfig(cfg) {
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val;
+    };
+    setVal('live-cfg-risk-per-trade', Math.round((cfg.risk_per_trade || 0.10) * 100 * 4) / 4);
+    setVal('live-cfg-min-confidence', Math.round((cfg.min_confidence || 0.65) * 100 / 5) * 5);
+    setVal('live-cfg-atr-halt', cfg.atr_halt_multiplier || 3.0);
+    setVal('live-cfg-dd-threshold', Math.round((cfg.drawdown_reduce_threshold || 0.10) * 100));
+    const f = cfg.friction || {};
+    setVal('live-cfg-slip-min', f.slippage_min ?? 0.5);
+    setVal('live-cfg-slip-max', f.slippage_max ?? 3.0);
+    setVal('live-cfg-spread-offhours', f.spread_offhours_extra ?? 2.5);
+    setVal('live-cfg-news-prob', Math.round((f.news_spike_prob ?? 0.05) * 100));
+    setVal('live-cfg-news-extra', f.news_spike_extra ?? 5.0);
+    setVal('live-cfg-lot-cap', f.lot_cap ?? 2.0);
+    updateLiveRangeDisplays();
+}
+
+function updateLiveRangeDisplays() {
+    document.querySelectorAll('#sidebar-left .wt-range-value[data-for]').forEach(span => {
+        const input = document.getElementById(span.dataset.for);
+        if (!input) return;
+        const suffix = span.dataset.suffix || '';
+        span.textContent = input.value + suffix;
+    });
+}
+
+async function loadLiveConfig() {
+    try {
+        const resp = await fetch(`/api/live/config?model=${encodeURIComponent(currentModel)}`);
+        if (resp.ok) {
+            const cfg = await resp.json();
+            populateLiveConfig(cfg);
+        }
+    } catch (err) {
+        console.warn('Could not load live config:', err);
+    }
+}
+
+async function applyLiveConfig() {
+    const btn = document.getElementById('btn-apply-live-config');
+    if (!btn) return;
+    const btnText = btn.querySelector('.btn-text');
+    const spinner = btn.querySelector('.wt-spinner');
+    btn.disabled = true;
+    if (btnText) btnText.style.display = 'none';
+    if (spinner) spinner.style.display = 'inline-block';
+
+    try {
+        const cfg = collectLiveConfig();
+        const resp = await fetch(`/api/live/config?model=${encodeURIComponent(currentModel)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+        if (resp.ok) {
+            const updated = await resp.json();
+            populateLiveConfig(updated);
+            showToast('Live configuration applied', 'success');
+        } else {
+            showToast('Failed to apply live config', 'error');
+        }
+    } catch (err) {
+        showToast('Error: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        if (btnText) btnText.style.display = '';
+        if (spinner) spinner.style.display = 'none';
+    }
+}
+
+function setupLiveConfigPanel() {
+    // Apply button
+    const applyBtn = document.getElementById('btn-apply-live-config');
+    if (applyBtn) applyBtn.addEventListener('click', applyLiveConfig);
+
+    // Reset button
+    const resetBtn = document.getElementById('btn-reset-live-defaults');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', async () => {
+            populateLiveConfig(LIVE_CONFIG_DEFAULTS);
+            await applyLiveConfig();
+        });
+    }
+
+    // Range slider live display updates
+    document.querySelectorAll('#sidebar-left input[type="range"]').forEach(input => {
+        input.addEventListener('input', updateLiveRangeDisplays);
+    });
+
+    // Sync currency pair dropdown with nav pair selector
+    const cfgPair = document.getElementById('live-cfg-pair');
+    const navPair = document.getElementById('nav-pair-select');
+    if (cfgPair && navPair) {
+        cfgPair.value = navPair.value;
+        cfgPair.addEventListener('change', (e) => {
+            navPair.value = e.target.value;
+            navPair.dispatchEvent(new Event('change'));
+        });
+        navPair.addEventListener('change', () => {
+            cfgPair.value = navPair.value;
+        });
+    }
 }

@@ -283,6 +283,26 @@ function connectSSE() {
             loadTradeHistory();
         } catch (err) {}
     });
+
+    // ── LLM Arbiter decision ────────────────────────────────────────────
+    eventSource.addEventListener('arbiter', (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (typeof handleArbiterSSE === 'function') {
+                handleArbiterSSE(data);
+            }
+            // Show toast for veto/override
+            if (data.action === 'VETO') {
+                if (typeof showToast === 'function') {
+                    showToast(`LLM Arbiter VETOED ${data.original_signal}: ${(data.reasoning || '').substring(0, 60)}`, 'warning');
+                }
+            } else if (data.action === 'OVERRIDE') {
+                if (typeof showToast === 'function') {
+                    showToast(`LLM Arbiter OVERRIDE: ${data.original_signal} → ${data.modified_signal}`, 'warning');
+                }
+            }
+        } catch (err) {}
+    });
 }
 
 function disconnectSSE() {

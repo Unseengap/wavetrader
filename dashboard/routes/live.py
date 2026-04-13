@@ -130,6 +130,24 @@ def set_auto_trade():
     return jsonify(svc.auto_trade_status)
 
 
+# ── Live Config ───────────────────────────────────────────────────────────
+
+@live_bp.route("/config", methods=["GET"])
+def get_live_config():
+    """Return the current live trading configuration."""
+    svc = get_live_service(_model_id())
+    return jsonify(svc.live_config)
+
+
+@live_bp.route("/config", methods=["POST"])
+def update_live_config():
+    """Update live trading configuration at runtime."""
+    svc = get_live_service(_model_id())
+    cfg = request.get_json(force=True)
+    updated = svc.update_config(cfg)
+    return jsonify(updated)
+
+
 # ── Trade History ─────────────────────────────────────────────────────────
 
 @live_bp.route("/trade-history", methods=["GET"])
@@ -140,3 +158,49 @@ def get_trade_history():
     svc = get_live_service(_model_id())
     trades = svc.get_trade_history(pair=pair, count=count)
     return jsonify({"trades": trades})
+
+
+# ── LLM Arbiter ───────────────────────────────────────────────────────────
+
+@live_bp.route("/arbiter/status", methods=["GET"])
+def arbiter_status():
+    """Return LLM arbiter configuration and statistics."""
+    svc = get_live_service(_model_id())
+    return jsonify(svc.arbiter_status)
+
+
+@live_bp.route("/arbiter/config", methods=["POST"])
+def update_arbiter_config():
+    """Update LLM arbiter configuration at runtime."""
+    svc = get_live_service(_model_id())
+    cfg = request.get_json(force=True)
+    updated = svc.update_arbiter_config(cfg)
+    return jsonify(updated)
+
+
+@live_bp.route("/arbiter/decisions", methods=["GET"])
+def get_arbiter_decisions():
+    """Return recent LLM arbiter decisions."""
+    count = int(request.args.get("count", 50))
+    svc = get_live_service(_model_id())
+    decisions = svc.get_arbiter_decisions(count)
+    return jsonify({"decisions": decisions})
+
+
+@live_bp.route("/arbiter/stats", methods=["GET"])
+def get_arbiter_stats():
+    """Return aggregate arbiter statistics (for the trial tracker)."""
+    from wavetrader.llm_logger import get_decision_log
+    log = get_decision_log()
+    return jsonify(log.get_stats())
+
+
+@live_bp.route("/arbiter/calendar", methods=["GET"])
+def get_calendar_events():
+    """Return upcoming forex calendar events."""
+    pair = request.args.get("pair", "GBP/JPY")
+    hours = int(request.args.get("hours", 24))
+    from wavetrader.calendar import get_calendar
+    cal = get_calendar()
+    events = cal.get_upcoming(pair, hours_ahead=hours)
+    return jsonify({"events": [e.to_dict() for e in events]})

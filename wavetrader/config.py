@@ -171,10 +171,10 @@ class MeanRevConfig:
     zscore_exit: float = 0.5        # Z-score threshold for exit (snap-back)
 
     # --- Training ---
-    dropout: float = 0.15
+    dropout: float = 0.30
     learning_rate: float = 2e-4
-    batch_size: int = 640
-    epochs: int = 60
+    batch_size: int = 320
+    epochs: int = 30
 
     # --- Pair ---
     pair: str = "GBP/JPY"
@@ -213,3 +213,9 @@ class RiskScaling:
 
 # Default risk scaling — matches model.py predict() (was mismatched in backtest.py)
 DEFAULT_RISK_SCALING = RiskScaling()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Arbiter configuration (re-exported from llm_arbiter for convenience)
+# ─────────────────────────────────────────────────────────────────────────────
+from .llm_arbiter import LLMArbiterConfig  # noqa: E402

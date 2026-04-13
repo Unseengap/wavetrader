@@ -1,0 +1,316 @@
+/**
+ * WaveTrader LLM Arbiter Panel
+ * Handles arbiter decisions display, detail modal, SSE events,
+ * configuration toggles, and trial stats tracking.
+ */
+
+let _arbiterDecisions = [];
+
+// ── Initialization ──────────────────────────────────────────────────────────
+
+function initArbiterPanel() {
+    // Load arbiter status
+    loadArbiterStatus();
+    // Load existing decisions
+    loadArbiterDecisions();
+
+    // Wire up controls
+    const enableToggle = document.getElementById('arbiter-enabled-toggle');
+    if (enableToggle) {
+        enableToggle.addEventListener('change', () => {
+            updateArbiterConfig({ enabled: enableToggle.checked });
+        });
+    }
+
+    const modeSelect = document.getElementById('arbiter-mode-select');
+    if (modeSelect) {
+        modeSelect.addEventListener('change', () => {
+            updateArbiterConfig({ authority_mode: modeSelect.value });
+        });
+    }
+
+    // Close detail modal
+    const closeBtn = document.getElementById('arbiter-detail-close');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeArbiterDetail);
+    }
+}
+
+// ── Load Status ─────────────────────────────────────────────────────────────
+
+async function loadArbiterStatus() {
+    try {
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/arbiter/status?model=${encodeURIComponent(model)}`);
+        const data = await resp.json();
+
+        // Update UI
+        const toggle = document.getElementById('arbiter-enabled-toggle');
+        if (toggle) toggle.checked = data.enabled;
+
+        const modeSelect = document.getElementById('arbiter-mode-select');
+        if (modeSelect) modeSelect.value = data.authority_mode || 'advisory';
+
+        const badge = document.getElementById('arbiter-status-badge');
+        if (badge) {
+            const mode = (data.authority_mode || 'advisory').toUpperCase();
+            badge.textContent = mode;
+            badge.className = 'wt-arbiter-mode-badge';
+            if (mode === 'VETO') badge.style.background = 'rgba(248,81,73,0.15)';
+            else if (mode === 'OVERRIDE') badge.style.background = 'rgba(227,176,35,0.15)';
+            else badge.style.background = 'rgba(139,92,246,0.15)';
+        }
+
+        // Update stats
+        if (data.stats) updateArbiterStats(data.stats);
+    } catch (err) {
+        console.warn('Could not load arbiter status:', err);
+    }
+}
+
+// ── Load Decisions ──────────────────────────────────────────────────────────
+
+async function loadArbiterDecisions() {
+    try {
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/arbiter/decisions?model=${encodeURIComponent(model)}&count=50`);
+        const data = await resp.json();
+        _arbiterDecisions = data.decisions || [];
+        renderArbiterDecisions();
+    } catch (err) {
+        console.warn('Could not load arbiter decisions:', err);
+    }
+}
+
+// ── Update Config ───────────────────────────────────────────────────────────
+
+async function updateArbiterConfig(cfg) {
+    try {
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/arbiter/config?model=${encodeURIComponent(model)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+        const data = await resp.json();
+
+        // Update badge
+        const badge = document.getElementById('arbiter-status-badge');
+        if (badge) {
+            const mode = (data.authority_mode || 'advisory').toUpperCase();
+            badge.textContent = data.enabled ? mode : 'DISABLED';
+        }
+
+        if (typeof showToast === 'function') {
+            showToast(`Arbiter: ${data.enabled ? data.authority_mode : 'disabled'}`, 'info');
+        }
+    } catch (err) {
+        console.warn('Failed to update arbiter config:', err);
+    }
+}
+
+// ── Render Decision List ────────────────────────────────────────────────────
+
+function renderArbiterDecisions() {
+    const container = document.getElementById('arbiter-decisions-list');
+    if (!container) return;
+
+    if (_arbiterDecisions.length === 0) {
+        container.innerHTML = `
+            <div class="wt-empty-state" style="padding:2rem">
+                <i class="bi bi-robot" style="font-size:2rem;color:var(--wt-text-muted);opacity:0.3"></i>
+                <p style="margin-top:0.5rem">No arbiter decisions yet. Enable the arbiter and wait for signals.</p>
+            </div>`;
+        return;
+    }
+
+    let html = '';
+    for (const dec of _arbiterDecisions) {
+        const action = dec.action || 'APPROVE';
+        const actionClass = action === 'APPROVE' ? 'approve' : action === 'VETO' ? 'veto' : 'override';
+        const signal = dec.original_signal || '?';
+        const conf = dec.original_confidence ? (dec.original_confidence * 100).toFixed(1) : '?';
+        const pair = dec.pair || '';
+        const time = dec.timestamp ? new Date(dec.timestamp).toLocaleTimeString() : '';
+        const reasoning = dec.reasoning || '';
+        const shortReason = reasoning.length > 80 ? reasoning.substring(0, 80) + '…' : reasoning;
+        const tradePlaced = dec.trade_placed;
+        const latency = dec.latency_ms ? Math.round(dec.latency_ms) : 0;
+
+        // Outcome status
+        const outcome = dec.outcome;
+        let outcomeHtml = '';
+        if (outcome && outcome.pnl !== undefined) {
+            const pnl = parseFloat(outcome.pnl);
+            const cls = pnl >= 0 ? 'wt-pnl-positive' : 'wt-pnl-negative';
+            outcomeHtml = `<span class="${cls}">$${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</span>`;
+        } else if (tradePlaced) {
+            outcomeHtml = '<span style="color:var(--wt-text-muted);font-size:0.68rem">Pending…</span>';
+        } else if (action === 'VETO') {
+            outcomeHtml = '<span style="color:var(--wt-text-muted);font-size:0.68rem">Simulating…</span>';
+        }
+
+        html += `
+        <div class="wt-arbiter-decision-row ${actionClass}" data-decision-id="${dec.decision_id || ''}" onclick="openArbiterDetail(this.dataset.decisionId)">
+            <div class="wt-arbiter-decision-main">
+                <span class="wt-arbiter-action-badge ${actionClass}">${action}</span>
+                <span class="wt-arbiter-signal-badge ${signal.toLowerCase()}">${signal}</span>
+                <span style="font-size:0.72rem;color:var(--wt-text-muted)">${pair}</span>
+                <span style="font-size:0.72rem;color:var(--wt-text-muted)">Conf: ${conf}%</span>
+                <span style="flex:1;font-size:0.72rem;color:var(--wt-text);opacity:0.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${shortReason}</span>
+            </div>
+            <div class="wt-arbiter-decision-meta">
+                ${tradePlaced ? '<i class="bi bi-check-circle-fill" style="color:var(--wt-green);font-size:0.7rem" title="Trade placed"></i>' : '<i class="bi bi-dash-circle" style="color:var(--wt-text-muted);font-size:0.7rem" title="No trade"></i>'}
+                ${outcomeHtml}
+                <span style="font-size:0.68rem;color:var(--wt-text-muted)">${latency}ms</span>
+                <span style="font-size:0.68rem;color:var(--wt-text-muted)">${time}</span>
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+// ── Handle SSE Arbiter Events ───────────────────────────────────────────────
+
+function handleArbiterSSE(data) {
+    // Prepend new decision to list
+    _arbiterDecisions.unshift(data);
+    _arbiterDecisions = _arbiterDecisions.slice(0, 100);
+    renderArbiterDecisions();
+
+    // Refresh stats
+    loadArbiterStats();
+}
+
+async function loadArbiterStats() {
+    try {
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/arbiter/stats?model=${encodeURIComponent(model)}`);
+        const data = await resp.json();
+        updateArbiterStats(data);
+    } catch (err) {
+        // Silent
+    }
+}
+
+function updateArbiterStats(stats) {
+    setText('arbiter-stat-total', stats.total_decisions || 0);
+    setText('arbiter-stat-approved', stats.approvals || 0);
+    setText('arbiter-stat-vetoed', stats.vetoes || 0);
+    setText('arbiter-stat-overrides', stats.overrides || 0);
+    setText('arbiter-stat-veto-saved', stats.veto_would_have_lost || 0);
+    setText('arbiter-stat-veto-missed', stats.veto_would_have_won || 0);
+    setText('arbiter-stat-latency', (stats.avg_latency_ms || 0) + 'ms');
+}
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+// ── Detail Modal ────────────────────────────────────────────────────────────
+
+function openArbiterDetail(decisionId) {
+    const dec = _arbiterDecisions.find(d => d.decision_id === decisionId);
+    if (!dec) return;
+
+    const modal = document.getElementById('arbiter-detail-modal');
+    if (!modal) return;
+
+    // Populate fields
+    const action = dec.action || 'APPROVE';
+    const actionBadge = document.getElementById('arbiter-detail-action-badge');
+    if (actionBadge) {
+        actionBadge.textContent = action;
+        actionBadge.className = `wt-arbiter-action-badge ${action.toLowerCase()}`;
+    }
+
+    setText('arbiter-detail-signal', `${dec.original_signal || '?'} → ${dec.modified_signal || dec.original_signal || '?'}`);
+    setText('arbiter-detail-pair', dec.pair || '');
+    document.getElementById('arbiter-detail-reasoning').textContent = dec.reasoning || 'No reasoning provided';
+
+    // Risk notes
+    const riskSection = document.getElementById('arbiter-detail-risk-section');
+    const riskNotes = document.getElementById('arbiter-detail-risk-notes');
+    if (dec.risk_notes) {
+        riskSection.style.display = 'block';
+        riskNotes.textContent = dec.risk_notes;
+    } else {
+        riskSection.style.display = 'none';
+    }
+
+    // Signal details
+    setText('arbiter-detail-orig-signal', dec.original_signal || '?');
+    setText('arbiter-detail-confidence', dec.original_confidence ? (dec.original_confidence * 100).toFixed(1) + '%' : '?');
+    setText('arbiter-detail-entry', dec.entry_price ? dec.entry_price.toFixed(5) : '?');
+    setText('arbiter-detail-conf-adj', dec.confidence_adjustment ? (dec.confidence_adjustment > 0 ? '+' : '') + (dec.confidence_adjustment * 100).toFixed(1) + '%' : 'None');
+    setText('arbiter-detail-trade-placed', dec.trade_placed ? '✅ Yes' : '❌ No');
+    setText('arbiter-detail-llm-model', dec.model_used || '?');
+    setText('arbiter-detail-latency', dec.latency_ms ? Math.round(dec.latency_ms) + 'ms' : '?');
+
+    // Outcome
+    const outcomeEl = document.getElementById('arbiter-detail-outcome');
+    if (dec.outcome && dec.outcome.pnl !== undefined) {
+        const pnl = parseFloat(dec.outcome.pnl);
+        const cls = pnl >= 0 ? 'wt-pnl-positive' : 'wt-pnl-negative';
+        const result = pnl >= 0 ? 'WON' : 'LOST';
+        outcomeEl.innerHTML = `
+            <div style="display:flex;gap:16px;align-items:center">
+                <span class="${cls}" style="font-size:1.2rem;font-weight:700">$${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</span>
+                <span style="font-size:0.78rem;font-weight:600;color:${pnl >= 0 ? 'var(--wt-green)' : 'var(--wt-red, #f85149)'}">${result}</span>
+                ${dec.outcome.exit_reason ? `<span style="font-size:0.72rem;color:var(--wt-text-muted)">${dec.outcome.exit_reason}</span>` : ''}
+            </div>`;
+
+        // Show if LLM decision was correct
+        if (action === 'VETO') {
+            const simPnl = dec.outcome.simulated_pnl || pnl;
+            const saved = simPnl < 0;
+            outcomeEl.innerHTML += `
+                <div style="margin-top:8px;padding:6px 10px;border-radius:4px;background:${saved ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)'};font-size:0.75rem">
+                    ${saved
+                        ? `<i class="bi bi-shield-check" style="color:var(--wt-green)"></i> Veto <b>saved</b> us $${Math.abs(simPnl).toFixed(2)}`
+                        : `<i class="bi bi-exclamation-triangle" style="color:var(--wt-red, #f85149)"></i> Veto <b>missed</b> $${simPnl.toFixed(2)} profit`
+                    }
+                </div>`;
+        }
+    } else {
+        outcomeEl.innerHTML = '<span style="color:var(--wt-text-muted);font-size:0.75rem">Outcome pending — will update when trade closes or simulation period ends</span>';
+    }
+
+    // Calendar context
+    const calSection = document.getElementById('arbiter-detail-calendar-section');
+    const calEl = document.getElementById('arbiter-detail-calendar');
+    const context = dec.context || {};
+    const events = context.calendar_events || [];
+    if (events.length > 0) {
+        calSection.style.display = 'block';
+        calEl.innerHTML = events.map(e => {
+            const impactClass = e.impact === 'high' ? 'color:var(--wt-red, #f85149);font-weight:600' : e.impact === 'medium' ? 'color:var(--wt-yellow)' : 'color:var(--wt-text-muted)';
+            return `<div style="padding:2px 0"><span style="${impactClass}">[${(e.impact || '').toUpperCase()}]</span> ${e.currency}: ${e.event} (Prev: ${e.previous}, Fcst: ${e.forecast})</div>`;
+        }).join('');
+    } else {
+        calSection.style.display = 'none';
+    }
+
+    // Show modal
+    modal.style.display = 'flex';
+
+    // Hide the decision list behind the modal
+    const decList = document.getElementById('arbiter-decisions-list');
+    if (decList) decList.style.display = 'none';
+}
+
+function closeArbiterDetail() {
+    const modal = document.getElementById('arbiter-detail-modal');
+    if (modal) modal.style.display = 'none';
+
+    const decList = document.getElementById('arbiter-decisions-list');
+    if (decList) decList.style.display = '';
+}
+
+// ── Initialize on DOM ready ─────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+    initArbiterPanel();
+});
