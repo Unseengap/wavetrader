@@ -319,21 +319,24 @@ class LLMArbiter:
         ])
         return "\n".join(lines)
 
-    def _call_gemini(self, prompt: str, system_instruction: str, model_name: str) -> str:
+    def _call_gemini(self, prompt: str, system_instruction: str, model_name: str, allow_thinking: bool = False) -> str:
         """Call the Gemini API and return the response text."""
         from google.genai import types
+
+        config_kwargs = {
+            "system_instruction": system_instruction,
+            "temperature": self.config.temperature,
+            "max_output_tokens": 4096 if allow_thinking else 1024,
+        }
+        if not allow_thinking:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
 
         for attempt in range(self.config.max_retries + 1):
             try:
                 response = self._client.models.generate_content(
                     model=model_name,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=self.config.temperature,
-                        max_output_tokens=1024,
-                        thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    ),
+                    config=types.GenerateContentConfig(**config_kwargs),
                 )
                 # resp.text can be None with thinking models — extract from parts as fallback
                 text = response.text
@@ -516,7 +519,7 @@ class LLMArbiter:
             model_name = self.config.escalation_model or self.config.model
             result["model_used"] = model_name
 
-            raw = self._call_gemini(prompt, system, model_name)
+            raw = self._call_gemini(prompt, system, model_name, allow_thinking=True)
             result["latency_ms"] = round((time.time() - t0) * 1000, 1)
 
             # Parse the response
