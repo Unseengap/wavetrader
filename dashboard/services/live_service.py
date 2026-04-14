@@ -745,7 +745,21 @@ class LiveService:
         # Collect recent bars from this service's OANDA connection
         recent_bars = []
         try:
-            candles = self._oanda_demo.get_candles(pair, "M15", count=40)
+            # Ensure OANDA client is available for fetching bars
+            oanda = self._oanda_demo
+            if oanda is None:
+                from wavetrader.oanda import OANDAClient, OANDAConfig
+                me = self._model_entry
+                if me and me.demo_api_key and me.demo_account_id:
+                    demo_cfg = OANDAConfig(
+                        api_key=me.demo_api_key,
+                        account_id=me.demo_account_id,
+                        environment="practice",
+                    )
+                else:
+                    demo_cfg = OANDAConfig.demo_from_env()
+                oanda = OANDAClient(demo_cfg)
+            candles = oanda.get_candles(pair, "M15", count=40)
             for c in candles:
                 recent_bars.append({
                     "time": c.timestamp.isoformat() if c.timestamp else "",
@@ -766,7 +780,7 @@ class LiveService:
         # Collect per-model state
         models = {}
         models_info = {}
-        for entry in registry.models:
+        for entry in registry.list_models():
             mid = entry.id
             models_info[mid] = {
                 "name": entry.name,
