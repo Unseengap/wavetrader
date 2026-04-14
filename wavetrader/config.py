@@ -148,18 +148,18 @@ class MeanRevConfig:
     entry_timeframe: str = "15min"
 
     # --- Encoder ---
-    tf_wave_dim: int = 192
-    structure_emb_dim: int = 64
-    price_conv_dim: int = 128
+    tf_wave_dim: int = 128
+    structure_emb_dim: int = 48
+    price_conv_dim: int = 96
 
     # --- Fusion ---
-    fused_dim: int = 384
+    fused_dim: int = 256
 
     # --- Predictor ---
-    predictor_hidden: int = 384
-    predictor_heads: int = 6
-    predictor_layers: int = 3
-    predictor_ff_dim: int = 1536
+    predictor_hidden: int = 256
+    predictor_heads: int = 4
+    predictor_layers: int = 2
+    predictor_ff_dim: int = 1024
 
     # --- Outputs ---
     n_signal_classes: int = 3       # BUY / SELL / HOLD
@@ -171,10 +171,11 @@ class MeanRevConfig:
     zscore_exit: float = 0.5        # Z-score threshold for exit (snap-back)
 
     # --- Training ---
-    dropout: float = 0.30
+    dropout: float = 0.45
     learning_rate: float = 2e-4
     batch_size: int = 320
     epochs: int = 30
+    label_smoothing: float = 0.1
 
     # --- Pair ---
     pair: str = "GBP/JPY"

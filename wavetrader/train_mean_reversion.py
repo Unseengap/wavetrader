@@ -35,6 +35,7 @@ class MeanRevLoss(nn.Module):
         conf_weight: float = 0.1,
         extension_weight: float = 0.3,
         regime_weight: float = 0.2,
+        label_smoothing: float = 0.1,
     ) -> None:
         super().__init__()
         self.signal_weight = signal_weight
@@ -43,8 +44,10 @@ class MeanRevLoss(nn.Module):
         self.regime_weight = regime_weight
 
         # Down-weight HOLD to encourage the model to take trades
+        # Label smoothing prevents overconfident logits → better generalisation
         self.signal_ce = nn.CrossEntropyLoss(
-            weight=torch.tensor([1.0, 1.0, 0.3])
+            weight=torch.tensor([1.0, 1.0, 0.3]),
+            label_smoothing=label_smoothing,
         )
 
     def forward(

@@ -66,13 +66,13 @@ class MeanRevSignalHead(nn.Module):
     def __init__(self, input_dim: int, dropout: float = 0.1) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim, 128),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(256, 128),
+            nn.Linear(128, 64),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(128, 3),
+            nn.Linear(64, 3),
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -90,9 +90,9 @@ class ExtensionHead(nn.Module):
     def __init__(self, input_dim: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 64),
             nn.GELU(),
-            nn.Linear(128, 1),
+            nn.Linear(64, 1),
         )
 
     def forward(self, x: Tensor) -> Tensor:
