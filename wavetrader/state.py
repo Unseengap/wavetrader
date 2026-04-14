@@ -45,6 +45,18 @@ class LiveState:
     losing_trades: int
     total_pnl: float
     model_version: str
+    # TSL state (added to survive restarts)
+    open_trade_sl: Optional[float] = None
+    open_trade_initial_sl: Optional[float] = None
+    open_trade_tp: Optional[float] = None
+    open_trade_trailing_pct: float = 0.0
+    open_trade_peak: float = 0.0
+    # Live account position state
+    live_trade_id: Optional[str] = None
+    live_trade_direction: Optional[str] = None
+    live_trade_entry: Optional[float] = None
+    live_trade_sl: Optional[float] = None
+    live_trade_tp: Optional[float] = None
 
 
 class StateManager:

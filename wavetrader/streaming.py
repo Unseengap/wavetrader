@@ -259,7 +259,25 @@ class StreamingEngine:
                 self.open_trade_sl = t.stop_loss
                 self.open_trade_initial_sl = t.stop_loss
                 self.open_trade_tp = t.take_profit
-                logger.info("Existing demo position: %s %s @ %.3f", t.trade_id, self.open_trade_direction.name, t.price)
+                # Recover TSL params if not already restored from checkpoint
+                if self.open_trade_trailing_pct <= 0:
+                    from wavetrader.config import DEFAULT_RISK_SCALING
+                    self.open_trade_trailing_pct = DEFAULT_RISK_SCALING.trail_mult * 0.5
+                    logger.info(
+                        "TSL params not in checkpoint — using default trailing_pct=%.4f",
+                        self.open_trade_trailing_pct,
+                    )
+                if self.open_trade_peak <= 0:
+                    # Estimate peak from recent candle history
+                    entry_tf = self.config.entry_timeframe
+                    if entry_tf in self._history and len(self._history[entry_tf]) > 0:
+                        self.open_trade_peak = float(self._history[entry_tf]["high"].max())
+                    else:
+                        self.open_trade_peak = t.price
+                    logger.info("Estimated open_trade_peak=%.3f", self.open_trade_peak)
+                logger.info("Existing demo position: %s %s @ %.3f (trailing_pct=%.4f peak=%.3f)",
+                            t.trade_id, self.open_trade_direction.name, t.price,
+                            self.open_trade_trailing_pct, self.open_trade_peak)
         except Exception as e:
             logger.warning("Could not check demo open trades: %s", e)
 
@@ -303,6 +321,28 @@ class StreamingEngine:
         if ls.get("open_trade_direction"):
             self.open_trade_direction = Signal[ls["open_trade_direction"]]
         self.open_trade_entry = ls.get("open_trade_entry")
+
+        # Restore TSL state (critical — without this, trailing stops die on restart)
+        self.open_trade_sl = ls.get("open_trade_sl")
+        self.open_trade_initial_sl = ls.get("open_trade_initial_sl")
+        self.open_trade_tp = ls.get("open_trade_tp")
+        self.open_trade_trailing_pct = ls.get("open_trade_trailing_pct", 0.0)
+        self.open_trade_peak = ls.get("open_trade_peak", 0.0)
+
+        # Restore live account position state
+        self.live_trade_id = ls.get("live_trade_id")
+        if ls.get("live_trade_direction"):
+            self.live_trade_direction = Signal[ls["live_trade_direction"]]
+        self.live_trade_entry = ls.get("live_trade_entry")
+        self.live_trade_sl = ls.get("live_trade_sl")
+        self.live_trade_tp = ls.get("live_trade_tp")
+
+        if self.open_trade_id and self.open_trade_trailing_pct > 0:
+            logger.info(
+                "Restored TSL state: trailing_pct=%.4f peak=%.3f sl=%.3f initial_sl=%.3f",
+                self.open_trade_trailing_pct, self.open_trade_peak,
+                self.open_trade_sl or 0.0, self.open_trade_initial_sl or 0.0,
+            )
 
         # Restore resonance buffer
         self.state_mgr.restore_resonance_buffer(self.resonance, ckpt)
@@ -843,9 +883,9 @@ class StreamingEngine:
             units = -units
 
         logger.info(
-            "Opening %s %s [%s]: units=%d SL=%.3f TP=%.3f conf=%.3f",
+            "Opening %s %s [%s]: units=%d SL=%.3f TP=%.3f conf=%.3f trailing_pct=%.4f",
             signal.signal.name, self.pair, account.upper(),
-            units, sl_price, tp_price, signal.confidence,
+            units, sl_price, tp_price, signal.confidence, signal.trailing_stop_pct,
         )
 
         try:
@@ -1021,6 +1061,10 @@ class StreamingEngine:
         from the peak price.
         """
         if not self.open_trade_id or self.open_trade_trailing_pct <= 0:
+            logger.debug(
+                "TSL skipped: trade_id=%s trailing_pct=%.4f",
+                self.open_trade_id, self.open_trade_trailing_pct,
+            )
             return
 
         from wavetrader.config import DEFAULT_RISK_SCALING
@@ -1038,12 +1082,20 @@ class StreamingEngine:
                     trail_distance = max(trail_distance, min_trail)
                     new_sl = self.open_trade_peak - trail_distance
                     if self.open_trade_sl and new_sl > self.open_trade_sl:
-                        self.open_trade_sl = new_sl
+                        # Update OANDA first — only commit locally if API succeeds
+                        demo_ok = True
+                        live_ok = True
                         if self.open_trade_id:
-                            self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                            demo_ok = self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
                         if self.live_trade_id and self.oanda_live:
-                            self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
-                        logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
+                            live_ok = self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                        if demo_ok:
+                            self.open_trade_sl = new_sl
+                            logger.info("Trailing SL updated to %.3f (dist=%.3f peak=%.3f)", new_sl, trail_distance, self.open_trade_peak)
+                        else:
+                            logger.warning("TSL modify_trade failed on demo — will retry next bar (wanted SL=%.3f)", new_sl)
+                        if not live_ok:
+                            logger.warning("TSL modify_trade failed on live — will retry next bar (wanted SL=%.3f)", new_sl)
 
             # Check if SL hit
             if self.open_trade_sl and candle.low <= self.open_trade_sl:
@@ -1061,12 +1113,20 @@ class StreamingEngine:
                     trail_distance = max(trail_distance, min_trail)
                     new_sl = self.open_trade_peak + trail_distance
                     if self.open_trade_sl and new_sl < self.open_trade_sl:
-                        self.open_trade_sl = new_sl
+                        # Update OANDA first — only commit locally if API succeeds
+                        demo_ok = True
+                        live_ok = True
                         if self.open_trade_id:
-                            self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
+                            demo_ok = self.oanda_demo.modify_trade(self.open_trade_id, sl=new_sl)
                         if self.live_trade_id and self.oanda_live:
-                            self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
-                        logger.info("Trailing SL updated to %.3f (dist=%.3f)", new_sl, trail_distance)
+                            live_ok = self.oanda_live.modify_trade(self.live_trade_id, sl=new_sl)
+                        if demo_ok:
+                            self.open_trade_sl = new_sl
+                            logger.info("Trailing SL updated to %.3f (dist=%.3f peak=%.3f)", new_sl, trail_distance, self.open_trade_peak)
+                        else:
+                            logger.warning("TSL modify_trade failed on demo — will retry next bar (wanted SL=%.3f)", new_sl)
+                        if not live_ok:
+                            logger.warning("TSL modify_trade failed on live — will retry next bar (wanted SL=%.3f)", new_sl)
 
             # Check if SL hit
             if self.open_trade_sl and candle.high >= self.open_trade_sl:
@@ -1118,6 +1178,20 @@ class StreamingEngine:
             losing_trades=self.losing_trades,
             total_pnl=self.total_pnl,
             model_version="2.0.1",
+            # TSL state
+            open_trade_sl=self.open_trade_sl,
+            open_trade_initial_sl=self.open_trade_initial_sl,
+            open_trade_tp=self.open_trade_tp,
+            open_trade_trailing_pct=self.open_trade_trailing_pct,
+            open_trade_peak=self.open_trade_peak,
+            # Live account state
+            live_trade_id=self.live_trade_id,
+            live_trade_direction=(
+                self.live_trade_direction.name if self.live_trade_direction else None
+            ),
+            live_trade_entry=self.live_trade_entry,
+            live_trade_sl=self.live_trade_sl,
+            live_trade_tp=self.live_trade_tp,
         )
 
         resonance_waves = list(self.resonance._waves) if self.resonance._waves else None
