@@ -338,6 +338,9 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
     elif model_type == "meanrev":
         from wavetrader.config import MeanRevConfig
         model_config = MeanRevConfig(pair=pair)
+    elif model_type == "amd_scalper":
+        from wavetrader.config import AMDScalperConfig
+        model_config = AMDScalperConfig(pair=pair)
     else:
         model_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
 
@@ -736,6 +739,8 @@ def _load_latest_model(checkpoint_dir: Path, config: Any,
         prefix = "wavefollower_"
     elif model_type == "meanrev":
         prefix = "mean_reversion_"
+    elif model_type == "amd_scalper":
+        prefix = "amd_scalper_"
     else:
         prefix = "wavetrader_mtf_"
     ckpt_dirs = sorted(
@@ -764,6 +769,9 @@ def _load_latest_model(checkpoint_dir: Path, config: Any,
                     elif model_type == "meanrev":
                         from wavetrader.mean_reversion import MeanReversion
                         model = MeanReversion(config)
+                    elif model_type == "amd_scalper":
+                        from wavetrader.amd_scalper import AMDScalper
+                        model = AMDScalper(config)
                     else:
                         from wavetrader.model import WaveTraderMTF
                         model = WaveTraderMTF(config)

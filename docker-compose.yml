@@ -25,7 +25,7 @@ services:
       - OANDA_ENVIRONMENT=practice
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
+      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     depends_on:
       - redis
@@ -67,7 +67,7 @@ services:
       - MIN_CONFIDENCE=0.55
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
+      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     depends_on:
       - redis
@@ -108,7 +108,7 @@ services:
       - MIN_CONFIDENCE=0.55
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
+      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     depends_on:
       - redis
@@ -149,7 +149,7 @@ services:
       - MIN_CONFIDENCE=0.55
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
+      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     depends_on:
       - redis
@@ -206,7 +206,7 @@ services:
       # LLM Arbiter (Gemini)
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-advisory}
+      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
       - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     command: python -m dashboard.run --host 0.0.0.0 --port 5000
     depends_on:

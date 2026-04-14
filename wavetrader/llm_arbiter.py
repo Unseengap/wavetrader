@@ -45,7 +45,7 @@ class ArbiterAction(Enum):
 class LLMArbiterConfig:
     """Configuration for the LLM signal arbiter."""
     enabled: bool = True
-    authority_mode: str = "advisory"            # advisory / veto / override
+    authority_mode: str = "override"            # always override
     model: str = "gemini-2.5-flash"             # gemini-2.5-flash or gemini-2.5-pro
     escalation_model: str = "gemini-2.5-pro"    # used for high-impact events
     api_key_env: str = "GEMINI_API_KEY"
@@ -422,27 +422,7 @@ class LLMArbiter:
 
     def _enforce_authority(self, decision: ArbiterDecision) -> ArbiterDecision:
         """Enforce authority mode constraints on the decision."""
-        mode = self.config.authority_mode
-
-        if mode == "advisory":
-            # Advisory: always approve, just log reasoning
-            decision.action = "APPROVE"
-            decision.modified_signal = None
-            decision.modified_sl_pips = None
-            decision.modified_tp_pips = None
-            decision.confidence_adjustment = 0.0
-
-        elif mode == "veto":
-            # Veto: can APPROVE or VETO, cannot OVERRIDE
-            if decision.action == "OVERRIDE":
-                decision.action = "VETO"  # demote override to veto
-            decision.modified_signal = None
-            decision.modified_sl_pips = None
-            decision.modified_tp_pips = None
-            decision.confidence_adjustment = 0.0
-
-        # Override mode: no restrictions
-
+        # Always override mode — no restrictions on LLM decisions
         return decision
 
     def apply_decision(

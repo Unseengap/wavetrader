@@ -14,14 +14,6 @@ function initArbiterPanel() {
     // Load existing decisions
     loadArbiterDecisions();
 
-    // Wire up controls
-    const modeSelect = document.getElementById('arbiter-mode-select');
-    if (modeSelect) {
-        modeSelect.addEventListener('change', () => {
-            updateArbiterConfig({ authority_mode: modeSelect.value });
-        });
-    }
-
     // Close detail modal
     const closeBtn = document.getElementById('arbiter-detail-close');
     if (closeBtn) {
@@ -36,22 +28,6 @@ async function loadArbiterStatus() {
         const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
         const resp = await fetch(`/api/live/arbiter/status?model=${encodeURIComponent(model)}`);
         const data = await resp.json();
-
-        // Update UI
-        // Arbiter is always enabled
-
-        const modeSelect = document.getElementById('arbiter-mode-select');
-        if (modeSelect) modeSelect.value = data.authority_mode || 'advisory';
-
-        const badge = document.getElementById('arbiter-status-badge');
-        if (badge) {
-            const mode = (data.authority_mode || 'advisory').toUpperCase();
-            badge.textContent = mode;
-            badge.className = 'wt-arbiter-mode-badge';
-            if (mode === 'VETO') badge.style.background = 'rgba(248,81,73,0.15)';
-            else if (mode === 'OVERRIDE') badge.style.background = 'rgba(227,176,35,0.15)';
-            else badge.style.background = 'rgba(139,92,246,0.15)';
-        }
 
         // Update stats
         if (data.stats) updateArbiterStats(data.stats);
@@ -74,32 +50,7 @@ async function loadArbiterDecisions() {
     }
 }
 
-// ── Update Config ───────────────────────────────────────────────────────────
-
-async function updateArbiterConfig(cfg) {
-    try {
-        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
-        const resp = await fetch(`/api/live/arbiter/config?model=${encodeURIComponent(model)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cfg),
-        });
-        const data = await resp.json();
-
-        // Update badge
-        const badge = document.getElementById('arbiter-status-badge');
-        if (badge) {
-            const mode = (data.authority_mode || 'advisory').toUpperCase();
-            badge.textContent = mode;
-        }
-
-        if (typeof showToast === 'function') {
-            showToast(`Arbiter: ${data.authority_mode}`, 'info');
-        }
-    } catch (err) {
-        console.warn('Failed to update arbiter config:', err);
-    }
-}
+// ── (Config update removed — mode locked to override) ───────────────────────
 
 // ── Render Decision List ────────────────────────────────────────────────────
 

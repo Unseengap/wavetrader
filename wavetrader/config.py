@@ -185,6 +185,77 @@ class MeanRevConfig:
         return self.fused_dim
 
 
+@dataclass
+class AMDScalperConfig:
+    """Hyperparameters for the AMD Scalper (5-minute session manipulation reversal).
+
+    Uses the Accumulation–Manipulation–Distribution (AMD) framework:
+      - Asian session accumulation → tight range identified
+      - London session manipulation → aggressive sweep of the Asian range
+      - New York session distribution → reversal entry via one of 3 models
+
+    Three entry models (all active, gated by context):
+      1. Support & Resistance — horizontal flip zones + engulfing
+      2. Supply & Demand — demand/supply zones with FVG + engulfing
+      3. Open Range Breakout (ORB) — first-15min NY range + retracement
+    """
+
+    # --- Timeframes ---
+    timeframes: List[str] = field(
+        default_factory=lambda: ["5min", "15min", "1h", "4h"]
+    )
+    lookbacks: Dict[str, int] = field(
+        default_factory=lambda: {
+            "5min":  180,    # 15 hours — full Asian + London + NY session
+            "15min":  96,    # 24 hours — daily context
+            "1h":     72,    # 3 days — swing context
+            "4h":     50,    # ~8 days — higher-TF bias
+        }
+    )
+    entry_timeframe: str = "5min"
+
+    # --- Encoder ---
+    tf_wave_dim: int = 160          # Per-TF encoder output
+    structure_emb_dim: int = 56     # Structure-specific embedding
+    price_conv_dim: int = 112       # Price conv channels
+
+    # --- AMD Phase Detector ---
+    amd_hidden_dim: int = 128       # AMD phase detection MLP
+    asian_range_max_pips: float = 80.0   # Asian range filter threshold
+    london_sweep_min_pips: float = 15.0  # Min London sweep magnitude
+
+    # --- Fusion ---
+    fused_dim: int = 320            # After multi-TF fusion
+
+    # --- Predictor ---
+    predictor_hidden: int = 320
+    predictor_heads: int = 4
+    predictor_layers: int = 3
+    predictor_ff_dim: int = 1280
+
+    # --- Entry Models ---
+    n_entry_models: int = 3         # S&R, S&D, ORB
+    entry_head_dim: int = 128       # Per-entry-model hidden dim
+
+    # --- Outputs ---
+    n_signal_classes: int = 3       # BUY / SELL / HOLD
+    n_phase_classes: int = 4        # ACCUM / MANIP / DIST / INVALID
+
+    # --- Training ---
+    dropout: float = 0.20
+    learning_rate: float = 2e-4
+    batch_size: int = 640
+    epochs: int = 50
+    label_smoothing: float = 0.1
+
+    # --- Pair ---
+    pair: str = "GBP/JPY"
+
+    @property
+    def output_wave_dim(self) -> int:
+        return self.fused_dim
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Unified risk scaling — single source of truth for SL/TP/trailing conversion
 # ─────────────────────────────────────────────────────────────────────────────
