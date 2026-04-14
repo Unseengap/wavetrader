@@ -348,6 +348,7 @@ class LiveService:
                     "nav": acct.nav,
                     "unrealized_pnl": acct.unrealized_pnl,
                     "margin_used": acct.margin_used,
+                    "margin_available": acct.margin_available,
                     "open_trades": acct.open_trade_count,
                     "currency": acct.currency,
                 }
@@ -356,6 +357,7 @@ class LiveService:
                 result["nav"] = acct.nav
                 result["unrealized_pnl"] = acct.unrealized_pnl
                 result["margin_used"] = acct.margin_used
+                result["margin_available"] = acct.margin_available
                 result["open_trades"] = acct.open_trade_count
                 result["currency"] = acct.currency
                 result["market_open"] = self._oanda_demo.is_market_open()
@@ -810,6 +812,8 @@ class LiveService:
                     "balance": acct.get("balance", 0),
                     "nav": acct.get("nav", 0),
                     "unrealized_pnl": acct.get("unrealized_pnl", 0),
+                    "margin_used": acct.get("margin_used", 0),
+                    "margin_available": acct.get("margin_available", 0),
                     "open_positions": positions,
                     "recent_trades": recent_trades,
                     "recent_signals": recent_signals,
@@ -817,7 +821,8 @@ class LiveService:
             except Exception as e:
                 logger.warning("Inspection: could not load model %s: %s", mid, e)
                 models[mid] = {"name": entry.name, "balance": 0, "nav": 0,
-                               "unrealized_pnl": 0, "open_positions": [],
+                               "unrealized_pnl": 0, "margin_used": 0,
+                               "margin_available": 0, "open_positions": [],
                                "recent_trades": [], "recent_signals": []}
 
         context = {
@@ -874,6 +879,15 @@ class LiveService:
                         target_svc._demo_trade_direction = None
                 except Exception as sync_err:
                     logger.warning("Inspection OANDA sync failed: %s", sync_err)
+
+                # If LLM says close_first, close the existing position before
+                # placing the new trade so margin is freed up.
+                if ta.get("close_first") and target_svc._demo_trade_id:
+                    logger.info(
+                        "Inspection: closing existing %s position %s first (LLM requested)",
+                        target_svc._demo_trade_direction, target_svc._demo_trade_id,
+                    )
+                    target_svc._close_position_on("demo", "LLM inspection: close before reversal")
 
                 # Get current price
                 price_data = target_svc._oanda_demo.get_price(pair)

@@ -544,6 +544,13 @@ class LLMArbiter:
             "If you recommend a trade, it will be executed through one of the model's OANDA accounts.\n"
             "Choose the most appropriate model account (prefer the one with the best balance/margin).\n"
             "Only recommend trades with a clear setup — DO NOT force a trade if the market is unclear.\n\n"
+            "**IMPORTANT — Margin Management:**\n"
+            "- Check the margin_available for each model account BEFORE recommending a trade.\n"
+            "- If the target account has an open position in the OPPOSITE direction and low margin, "
+            "set `\"close_first\": true` in trade_action. This will close the existing position first to free up margin, "
+            "then place your recommended trade.\n"
+            "- If the target account already has a position in the SAME direction, do NOT recommend a duplicate trade.\n"
+            "- Size your SL/TP to be realistic for the available margin — tighter stops for smaller accounts.\n\n"
             "## Response Format\n"
             "Respond with valid JSON matching this schema:\n"
             "```json\n"
@@ -553,6 +560,7 @@ class LLMArbiter:
             '  "trade_action": null | {\n'
             '    "model_id": "string — which model account to use",\n'
             '    "signal": "BUY"|"SELL",\n'
+            '    "close_first": true|false,\n'
             '    "sl_pips": float,\n'
             '    "tp_pips": float,\n'
             '    "confidence": float (0-1),\n'
@@ -590,7 +598,12 @@ class LLMArbiter:
             lines.extend(["", "## Model Accounts & Positions"])
             for mid, m in models.items():
                 lines.append(f"\n### {m.get('name', mid)} ({mid})")
-                lines.append(f"Balance: ${m.get('balance', 0):,.2f} | NAV: ${m.get('nav', 0):,.2f} | Unrealised P&L: ${m.get('unrealized_pnl', 0):,.2f}")
+                lines.append(
+                    f"Balance: ${m.get('balance', 0):,.2f} | NAV: ${m.get('nav', 0):,.2f} | "
+                    f"Unrealised P&L: ${m.get('unrealized_pnl', 0):,.2f} | "
+                    f"Margin Used: ${m.get('margin_used', 0):,.2f} | "
+                    f"Margin Available: ${m.get('margin_available', 0):,.2f}"
+                )
 
                 positions = m.get("open_positions", [])
                 if positions:
@@ -679,6 +692,7 @@ class LLMArbiter:
                 result["trade_action"] = {
                     "model_id": ta["model_id"],
                     "signal": signal,
+                    "close_first": bool(ta.get("close_first", False)),
                     "sl_pips": float(ta.get("sl_pips", 20)),
                     "tp_pips": float(ta.get("tp_pips", 40)),
                     "confidence": max(0.0, min(1.0, float(ta.get("confidence", 0.7)))),
