@@ -473,3 +473,231 @@ class LLMArbiter:
 
         # APPROVE — no changes
         return signal_dict
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Manual inspection — user-triggered comprehensive market analysis
+    # ─────────────────────────────────────────────────────────────────────
+
+    def inspect(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run a comprehensive on-demand market inspection.
+
+        Unlike ``evaluate()`` which validates a single signal, this method
+        takes a broad snapshot of ALL models, accounts, open trades, calendar,
+        and recent price action and asks the LLM to:
+          1. Analyse the current market
+          2. Comment on each model's behaviour
+          3. Optionally recommend a trade (executed through a model account)
+
+        Returns a dict with the LLM's full analysis + optional trade action.
+        """
+        t0 = time.time()
+        result: Dict[str, Any] = {
+            "inspection_id": str(uuid.uuid4())[:12],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "analysis": "",
+            "trade_action": None,    # None or {model_id, signal, sl_pips, tp_pips, reasoning}
+            "risk_warnings": [],
+            "model_used": "",
+            "latency_ms": 0,
+            "error": None,
+        }
+
+        if not self._ensure_client():
+            result["error"] = "Gemini client unavailable"
+            result["analysis"] = "LLM arbiter could not initialise — check GEMINI_API_KEY."
+            return result
+
+        try:
+            prompt = self._build_inspection_prompt(context)
+            system = self._inspection_system_instruction(context)
+
+            # Always use Pro for inspections since user explicitly requested it
+            model_name = self.config.escalation_model or self.config.model
+            result["model_used"] = model_name
+
+            raw = self._call_gemini(prompt, system, model_name)
+            result["latency_ms"] = round((time.time() - t0) * 1000, 1)
+
+            # Parse the response
+            parsed = self._parse_inspection_response(raw)
+            result["analysis"] = parsed.get("analysis", raw)
+            result["risk_warnings"] = parsed.get("risk_warnings", [])
+            result["trade_action"] = parsed.get("trade_action")
+
+            logger.info(
+                "LLM Inspection complete (%.0fms): trade_action=%s",
+                result["latency_ms"],
+                result["trade_action"]["signal"] if result.get("trade_action") else "NONE",
+            )
+
+        except Exception as e:
+            logger.error("LLM Inspection failed: %s", e)
+            result["error"] = str(e)
+            result["analysis"] = f"Inspection failed: {e}"
+            result["latency_ms"] = round((time.time() - t0) * 1000, 1)
+
+        return result
+
+    def _inspection_system_instruction(self, context: Dict[str, Any]) -> str:
+        models_info = context.get("models_info", {})
+        model_descriptions = ""
+        for mid, info in models_info.items():
+            model_descriptions += f"\n- **{info.get('name', mid)}** ({mid}): {info.get('description', 'AI trading model')}"
+
+        return (
+            "You are a senior forex market analyst and trade advisor for the WaveTrader automated trading platform.\n"
+            "The user has pressed the 'Inspect Market' button to get your comprehensive analysis.\n\n"
+            "## Platform Models" + model_descriptions + "\n\n"
+            "## Your Role\n"
+            "1. Analyse the current market conditions based on recent price action, calendar events, and session.\n"
+            "2. Comment on open trades across ALL models — are they well-positioned? Should any be closed?\n"
+            "3. Review each model's recent signals and trade history. Are they performing well?\n"
+            "4. If you see a trading opportunity that the models might be missing, recommend a trade.\n"
+            "5. Flag any risk concerns (news events, drawdown, overexposure, session risks).\n\n"
+            "## Trade Recommendations\n"
+            "If you recommend a trade, it will be executed through one of the model's OANDA accounts.\n"
+            "Choose the most appropriate model account (prefer the one with the best balance/margin).\n"
+            "Only recommend trades with a clear setup — DO NOT force a trade if the market is unclear.\n\n"
+            "## Response Format\n"
+            "Respond with valid JSON matching this schema:\n"
+            "```json\n"
+            "{\n"
+            '  "analysis": "string — 3-6 paragraph comprehensive market analysis",\n'
+            '  "risk_warnings": ["string array — specific warnings"],\n'
+            '  "trade_action": null | {\n'
+            '    "model_id": "string — which model account to use",\n'
+            '    "signal": "BUY"|"SELL",\n'
+            '    "sl_pips": float,\n'
+            '    "tp_pips": float,\n'
+            '    "confidence": float (0-1),\n'
+            '    "reasoning": "string — why this trade"\n'
+            "  }\n"
+            "}\n"
+            "```\n"
+            "Set trade_action to null if no trade is recommended."
+        )
+
+    def _build_inspection_prompt(self, ctx: Dict[str, Any]) -> str:
+        lines = [
+            "# Market Inspection Request",
+            f"Pair: **{ctx.get('pair', 'GBP/JPY')}** | Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+            f"Session: {ctx.get('current_session', 'Unknown')}",
+            "",
+        ]
+
+        # Recent bars
+        bars = ctx.get("recent_bars", [])
+        if bars:
+            lines.append(f"## Last {len(bars)} Bars (15min, newest last)")
+            lines.append("Time | Open | High | Low | Close | Volume")
+            lines.append("---|---|---|---|---|---")
+            for bar in bars[-40:]:
+                t = bar.get("time", bar.get("date", ""))
+                lines.append(
+                    f"{t} | {bar.get('open', 0):.5f} | {bar.get('high', 0):.5f} | "
+                    f"{bar.get('low', 0):.5f} | {bar.get('close', 0):.5f} | {bar.get('volume', 0)}"
+                )
+
+        # Per-model state
+        models = ctx.get("models", {})
+        if models:
+            lines.extend(["", "## Model Accounts & Positions"])
+            for mid, m in models.items():
+                lines.append(f"\n### {m.get('name', mid)} ({mid})")
+                lines.append(f"Balance: ${m.get('balance', 0):,.2f} | NAV: ${m.get('nav', 0):,.2f} | Unrealised P&L: ${m.get('unrealized_pnl', 0):,.2f}")
+
+                positions = m.get("open_positions", [])
+                if positions:
+                    lines.append(f"Open Positions ({len(positions)}):")
+                    for pos in positions:
+                        lines.append(
+                            f"  - {pos.get('direction', '?')} {pos.get('instrument', '?')} "
+                            f"@ {pos.get('price', 0):.3f} | P&L: ${pos.get('unrealized_pnl', 0):.2f} | "
+                            f"SL: {pos.get('sl', 'N/A')} TP: {pos.get('tp', 'N/A')}"
+                        )
+                else:
+                    lines.append("No open positions.")
+
+                recent_trades = m.get("recent_trades", [])
+                if recent_trades:
+                    lines.append(f"Last {len(recent_trades)} trades:")
+                    for t in recent_trades:
+                        pnl = t.get("realized_pl", t.get("pnl", 0))
+                        result = "WIN" if float(pnl) > 0 else "LOSS"
+                        lines.append(
+                            f"  {t.get('direction', '?')} | {t.get('open_time', t.get('openTime', '?'))} | "
+                            f"P&L: ${float(pnl):+.2f} ({result})"
+                        )
+
+                recent_signals = m.get("recent_signals", [])
+                if recent_signals:
+                    lines.append(f"Recent signals:")
+                    for s in recent_signals[-5:]:
+                        lines.append(
+                            f"  {s.get('signal', '?')} conf={s.get('confidence', 0):.3f} "
+                            f"@ {s.get('price', 0):.3f} ({s.get('timestamp', '?')})"
+                        )
+
+        # Calendar
+        events = ctx.get("calendar_events", [])
+        if events:
+            lines.extend(["", "## Upcoming Economic Events"])
+            for ev in events:
+                lines.append(
+                    f"  [{ev.get('impact', '?').upper()}] {ev.get('time', '?')} — "
+                    f"{ev.get('currency', '?')}: {ev.get('event', '?')} "
+                    f"(Prev: {ev.get('previous', '?')}, Forecast: {ev.get('forecast', '?')})"
+                )
+        else:
+            lines.extend(["", "## Upcoming Economic Events", "  None in the next 4 hours."])
+
+        lines.extend([
+            "",
+            "## Analysis Required",
+            "Provide your comprehensive market analysis. If you see a trade opportunity, include trade_action. Otherwise set it to null.",
+        ])
+        return "\n".join(lines)
+
+    def _parse_inspection_response(self, raw: str) -> Dict[str, Any]:
+        """Parse the LLM inspection response."""
+        text = raw.strip()
+        if text.startswith("```"):
+            inner_lines = text.split("\n")
+            text = "\n".join(inner_lines[1:-1] if inner_lines[-1].strip() == "```" else inner_lines[1:])
+            text = text.strip()
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            import re
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    return {"analysis": raw, "risk_warnings": [], "trade_action": None}
+            else:
+                return {"analysis": raw, "risk_warnings": [], "trade_action": None}
+
+        result: Dict[str, Any] = {
+            "analysis": data.get("analysis", ""),
+            "risk_warnings": data.get("risk_warnings", []),
+            "trade_action": None,
+        }
+
+        # Validate trade action if present
+        ta = data.get("trade_action")
+        if ta and isinstance(ta, dict):
+            signal = (ta.get("signal") or "").upper()
+            if signal in ("BUY", "SELL") and ta.get("model_id"):
+                result["trade_action"] = {
+                    "model_id": ta["model_id"],
+                    "signal": signal,
+                    "sl_pips": float(ta.get("sl_pips", 20)),
+                    "tp_pips": float(ta.get("tp_pips", 40)),
+                    "confidence": max(0.0, min(1.0, float(ta.get("confidence", 0.7)))),
+                    "reasoning": ta.get("reasoning", ""),
+                }
+
+        return result

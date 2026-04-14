@@ -303,6 +303,19 @@ function connectSSE() {
             }
         } catch (err) {}
     });
+
+    // ── LLM Market Inspection result ────────────────────────────────────
+    eventSource.addEventListener('inspection', (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (typeof displayInspectionResult === 'function') {
+                displayInspectionResult(data);
+            }
+            if (data.trade_action && typeof showToast === 'function') {
+                showToast(`LLM Inspection: ${data.trade_action.signal} recommended via ${data.trade_action.model_id}`, 'info');
+            }
+        } catch (err) {}
+    });
 }
 
 function disconnectSSE() {

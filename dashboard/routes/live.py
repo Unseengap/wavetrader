@@ -204,3 +204,11 @@ def get_calendar_events():
     cal = get_calendar()
     events = cal.get_upcoming(pair, hours_ahead=hours)
     return jsonify({"events": [e.to_dict() for e in events]})
+
+
+@live_bp.route("/arbiter/inspect", methods=["POST"])
+def run_inspection():
+    """Trigger a manual LLM market inspection across all models."""
+    svc = get_live_service(_model_id())
+    result = svc.run_inspection()
+    return jsonify(result)

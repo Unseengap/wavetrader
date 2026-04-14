@@ -715,6 +715,178 @@ class LiveService:
         )
         return self.arbiter_status
 
+    def run_inspection(self) -> dict:
+        """
+        Run a manual LLM market inspection across ALL models.
+
+        Gathers context from every registered model's LiveService, then calls
+        the arbiter's ``inspect()`` method for a comprehensive analysis.
+        If the LLM recommends a trade, execute it through the specified model.
+        """
+        from .model_registry import get_model_registry
+        from wavetrader.calendar import get_calendar
+
+        registry = get_model_registry()
+        cal = get_calendar()
+        pair = self._pair or "GBP/JPY"
+
+        # Determine session
+        now = datetime.now(timezone.utc)
+        hour = now.hour
+        if 0 <= hour < 9:
+            session = "Tokyo"
+        elif 7 <= hour < 16:
+            session = "London"
+        elif 12 <= hour < 21:
+            session = "New York"
+        else:
+            session = "Off-hours"
+
+        # Collect recent bars from this service's OANDA connection
+        recent_bars = []
+        try:
+            candles = self._oanda_demo.get_candles(pair, "M15", count=40)
+            for c in candles:
+                recent_bars.append({
+                    "time": c.timestamp.isoformat() if c.timestamp else "",
+                    "open": c.open, "high": c.high, "low": c.low,
+                    "close": c.close, "volume": c.volume,
+                })
+        except Exception as e:
+            logger.warning("Inspection: could not fetch bars: %s", e)
+
+        # Collect calendar events
+        events = []
+        try:
+            raw_events = cal.get_upcoming(pair, hours_ahead=4)
+            events = [e.to_dict() for e in raw_events]
+        except Exception:
+            pass
+
+        # Collect per-model state
+        models = {}
+        models_info = {}
+        for entry in registry.models:
+            mid = entry.id
+            models_info[mid] = {
+                "name": entry.name,
+                "description": entry.description or f"{entry.model_type} model",
+                "pair": entry.pair,
+            }
+            try:
+                svc = get_live_service(mid)
+                acct = {}
+                try:
+                    acct = svc.get_account()
+                except Exception:
+                    pass
+
+                positions = []
+                try:
+                    positions = svc.get_open_trades()
+                except Exception:
+                    pass
+
+                recent_trades = []
+                try:
+                    recent_trades = svc.get_trade_history(pair=pair, count=10)
+                except Exception:
+                    pass
+
+                recent_signals = getattr(svc, "_signal_history", [])[-5:]
+
+                models[mid] = {
+                    "name": entry.name,
+                    "balance": acct.get("balance", 0),
+                    "nav": acct.get("nav", 0),
+                    "unrealized_pnl": acct.get("unrealized_pnl", 0),
+                    "open_positions": positions,
+                    "recent_trades": recent_trades,
+                    "recent_signals": recent_signals,
+                }
+            except Exception as e:
+                logger.warning("Inspection: could not load model %s: %s", mid, e)
+                models[mid] = {"name": entry.name, "balance": 0, "nav": 0,
+                               "unrealized_pnl": 0, "open_positions": [],
+                               "recent_trades": [], "recent_signals": []}
+
+        context = {
+            "pair": pair,
+            "current_session": session,
+            "recent_bars": recent_bars,
+            "models": models,
+            "models_info": models_info,
+            "calendar_events": events,
+        }
+
+        # Run the LLM inspection
+        result = self._arbiter.inspect(context)
+
+        # If the LLM recommends a trade, execute it
+        trade_executed = None
+        ta = result.get("trade_action")
+        if ta and ta.get("signal") in ("BUY", "SELL"):
+            target_model = ta["model_id"]
+            try:
+                target_svc = get_live_service(target_model)
+                # Get current price
+                price_data = target_svc._oanda_demo.get_price(pair)
+                current_price = round((price_data["bid"] + price_data["ask"]) / 2, 5)
+
+                signal_dict = {
+                    "signal": ta["signal"],
+                    "confidence": ta.get("confidence", 0.7),
+                    "alignment": 0.0,
+                    "sl_pips": ta["sl_pips"],
+                    "tp_pips": ta["tp_pips"],
+                    "trailing_pct": 0.0,
+                    "timestamp": now.isoformat(),
+                    "_source": "llm_inspection",
+                }
+                target_svc._execute_signal(signal_dict, current_price)
+                trade_executed = {
+                    "model_id": target_model,
+                    "signal": ta["signal"],
+                    "price": current_price,
+                    "sl_pips": ta["sl_pips"],
+                    "tp_pips": ta["tp_pips"],
+                }
+                logger.info(
+                    "LLM Inspection trade executed: %s on %s @ %.3f",
+                    ta["signal"], target_model, current_price,
+                )
+            except Exception as e:
+                logger.error("LLM Inspection trade execution failed: %s", e)
+                trade_executed = {"error": str(e)}
+
+        result["trade_executed"] = trade_executed
+
+        # Broadcast to SSE
+        self.broadcaster.publish("inspection", result)
+
+        # Log the inspection
+        self._decision_log.log_decision({
+            "decision_id": result.get("inspection_id", ""),
+            "timestamp": result.get("timestamp", ""),
+            "model_id": "inspection",
+            "pair": pair,
+            "original_signal": "INSPECT",
+            "original_confidence": 0,
+            "action": "TRADE" if trade_executed and "error" not in trade_executed else "ANALYSIS",
+            "reasoning": (result.get("analysis", "") or "")[:500],
+            "confidence_adjustment": 0,
+            "modified_signal": ta["signal"] if ta else None,
+            "modified_sl_pips": ta["sl_pips"] if ta else None,
+            "modified_tp_pips": ta["tp_pips"] if ta else None,
+            "risk_notes": "; ".join(result.get("risk_warnings", [])),
+            "model_used": result.get("model_used", ""),
+            "latency_ms": result.get("latency_ms", 0),
+            "entry_price": trade_executed.get("price", 0) if trade_executed and isinstance(trade_executed, dict) else 0,
+            "trade_placed": bool(trade_executed and "error" not in (trade_executed or {})),
+        })
+
+        return result
+
     def _execute_signal(self, signal_dict: dict, current_price: float) -> None:
         """Execute a trade based on model signal on both accounts."""
         sig = signal_dict["signal"]  # "BUY", "SELL", "HOLD"

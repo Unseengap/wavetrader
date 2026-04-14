@@ -306,3 +306,121 @@ function closeArbiterDetail() {
 document.addEventListener('DOMContentLoaded', () => {
     initArbiterPanel();
 });
+
+
+// ── Manual Market Inspection ────────────────────────────────────────────────
+
+let _inspectionRunning = false;
+
+async function runInspection() {
+    if (_inspectionRunning) return;
+    _inspectionRunning = true;
+
+    const btn = document.getElementById('inspect-market-btn');
+    const status = document.getElementById('inspect-status');
+    if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Analysing…';
+    }
+    if (status) status.textContent = 'Calling Gemini Pro — this may take 10-20s…';
+
+    try {
+        const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
+        const resp = await fetch(`/api/live/arbiter/inspect?model=${encodeURIComponent(model)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await resp.json();
+        displayInspectionResult(data);
+
+        if (status) status.textContent = `Done in ${Math.round(data.latency_ms || 0)}ms`;
+    } catch (err) {
+        console.error('Inspection failed:', err);
+        if (status) status.textContent = 'Inspection failed: ' + err.message;
+    } finally {
+        _inspectionRunning = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.innerHTML = '<i class="bi bi-lightning-charge-fill"></i> Inspect Market';
+        }
+    }
+}
+
+function displayInspectionResult(data) {
+    const panel = document.getElementById('inspection-result-panel');
+    if (!panel) return;
+    panel.style.display = 'block';
+
+    // Time + latency
+    const timeEl = document.getElementById('inspection-time');
+    if (timeEl) timeEl.textContent = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : '';
+    const latEl = document.getElementById('inspection-latency');
+    if (latEl) latEl.textContent = data.latency_ms ? `${Math.round(data.latency_ms)}ms` : '';
+
+    // Analysis text
+    const analysisEl = document.getElementById('inspection-analysis');
+    if (analysisEl) analysisEl.textContent = data.analysis || 'No analysis returned.';
+
+    // Risk warnings
+    const warningsEl = document.getElementById('inspection-warnings');
+    const warnings = data.risk_warnings || [];
+    if (warningsEl) {
+        if (warnings.length > 0) {
+            warningsEl.style.display = 'block';
+            warningsEl.innerHTML = warnings.map(w =>
+                `<div style="padding:4px 8px;margin-bottom:3px;border-radius:4px;background:rgba(210,153,34,0.1);font-size:0.72rem;color:var(--wt-yellow)">
+                    <i class="bi bi-exclamation-triangle-fill" style="margin-right:4px"></i>${w}
+                </div>`
+            ).join('');
+        } else {
+            warningsEl.style.display = 'none';
+        }
+    }
+
+    // Trade action
+    const tradeEl = document.getElementById('inspection-trade');
+    const ta = data.trade_action;
+    const te = data.trade_executed;
+    if (tradeEl) {
+        if (ta) {
+            const sigColor = ta.signal === 'BUY' ? 'var(--wt-green, #3fb950)' : 'var(--wt-red, #f85149)';
+            let executedHtml = '';
+            if (te && !te.error) {
+                executedHtml = `
+                    <div style="margin-top:6px;padding:6px 10px;border-radius:4px;background:rgba(63,185,80,0.1);font-size:0.72rem">
+                        <i class="bi bi-check-circle-fill" style="color:var(--wt-green)"></i>
+                        <b>Trade placed</b> on ${te.model_id} @ ${(te.price || 0).toFixed(3)}
+                    </div>`;
+            } else if (te && te.error) {
+                executedHtml = `
+                    <div style="margin-top:6px;padding:6px 10px;border-radius:4px;background:rgba(248,81,73,0.1);font-size:0.72rem">
+                        <i class="bi bi-x-circle-fill" style="color:var(--wt-red, #f85149)"></i>
+                        Trade failed: ${te.error}
+                    </div>`;
+            }
+            tradeEl.style.display = 'block';
+            tradeEl.innerHTML = `
+                <div style="padding:8px 10px;border-radius:6px;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2)">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                        <span style="font-weight:700;color:${sigColor};font-size:0.82rem">${ta.signal}</span>
+                        <span style="font-size:0.72rem;color:var(--wt-text-muted)">via ${ta.model_id}</span>
+                        <span style="font-size:0.72rem;color:var(--wt-text-muted)">SL: ${ta.sl_pips}p | TP: ${ta.tp_pips}p</span>
+                        <span style="font-size:0.72rem;color:var(--wt-text-muted)">Conf: ${((ta.confidence || 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <div style="font-size:0.72rem;color:var(--wt-text);opacity:0.85">${ta.reasoning || ''}</div>
+                    ${executedHtml}
+                </div>`;
+        } else {
+            tradeEl.style.display = 'block';
+            tradeEl.innerHTML = `
+                <div style="font-size:0.72rem;color:var(--wt-text-muted);padding:4px 0">
+                    <i class="bi bi-info-circle"></i> No trade recommended — market unclear or models already positioned correctly.
+                </div>`;
+        }
+    }
+
+    // Scroll the arbiter tab into view
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
