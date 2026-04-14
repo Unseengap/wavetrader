@@ -1039,22 +1039,37 @@ class LiveService:
         try:
             acct = client.get_account_summary()
             balance = acct.balance
-            if acct.margin_available <= 0:
+            margin_available = acct.margin_available
+            if margin_available <= 0:
                 logger.warning(
                     "No margin available [%s] (margin_avail=%.2f) — skipping order",
-                    account.upper(), acct.margin_available,
+                    account.upper(), margin_available,
                 )
                 return
         except Exception:
             balance = 25000
+            margin_available = balance
 
-        # Position sizing — no artificial cap, OANDA enforces margin
+        # Position sizing — risk-based, then clamped to available margin
         sl_pips = signal_dict["sl_pips"]
         tp_pips = signal_dict["tp_pips"]
         risk_amount = balance * self._risk_per_trade
         lot = risk_amount / max(sl_pips * pip_value, 1e-9)
         lot = max(0.01, lot)
         units = int(lot * 100000)
+
+        # Clamp to what margin can support (estimate ~30:1 leverage for JPY pairs)
+        # Margin required ≈ units * price / leverage
+        leverage = 30
+        margin_per_unit = current_price / (leverage * 100)  # JPY pairs: price/100 is roughly USD value
+        max_units = int(margin_available * 0.90 / max(margin_per_unit, 1e-9))  # keep 10% buffer
+        if abs(units) > max_units > 0:
+            logger.warning(
+                "Clamping units from %d to %d (margin_avail=%.2f) [%s]",
+                units, max_units, margin_available, account.upper(),
+            )
+            units = max_units
+
         if sig == "SELL":
             units = -units
 

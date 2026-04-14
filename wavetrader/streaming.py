@@ -860,25 +860,35 @@ class StreamingEngine:
         try:
             acct = client.get_account_summary()
             balance = acct.balance
+            margin_available = acct.margin_available
         except Exception:
             balance = self.balance
+            margin_available = balance
 
         # Check available margin before placing
-        try:
-            if acct.margin_available <= 0:
-                logger.warning(
-                    "No margin available [%s] (margin_avail=%.2f) — skipping order",
-                    account.upper(), acct.margin_available,
-                )
-                return
-        except Exception:
-            pass  # acct may not exist if balance fallback was used
+        if margin_available <= 0:
+            logger.warning(
+                "No margin available [%s] (margin_avail=%.2f) — skipping order",
+                account.upper(), margin_available,
+            )
+            return
 
         risk_amount = balance * self.bt_config.risk_per_trade
         lot = risk_amount / max(signal.stop_loss * pip_value, 1e-9)
         lot = max(0.01, lot)  # no artificial upper cap — OANDA enforces margin
 
         units = int(lot * _LOT_SIZE)
+
+        # Clamp to what margin can support (~30:1 leverage for JPY pairs)
+        margin_per_unit = current_price / (30 * 100)  # JPY pairs: price/100 ≈ USD value
+        max_units = int(margin_available * 0.90 / max(margin_per_unit, 1e-9))
+        if abs(units) > max_units > 0:
+            logger.warning(
+                "Clamping units from %d to %d (margin_avail=%.2f) [%s]",
+                units, max_units, margin_available, account.upper(),
+            )
+            units = max_units
+
         if signal.signal == Signal.SELL:
             units = -units
 
