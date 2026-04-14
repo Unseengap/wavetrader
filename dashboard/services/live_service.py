@@ -843,6 +843,42 @@ class LiveService:
             target_model = ta["model_id"]
             try:
                 target_svc = get_live_service(target_model)
+
+                # Ensure OANDA client is available on the target service
+                if target_svc._oanda_demo is None:
+                    from wavetrader.oanda import OANDAClient, OANDAConfig
+                    me = target_svc._model_entry
+                    if me and me.demo_api_key and me.demo_account_id:
+                        demo_cfg = OANDAConfig(
+                            api_key=me.demo_api_key,
+                            account_id=me.demo_account_id,
+                            environment="practice",
+                        )
+                    else:
+                        demo_cfg = OANDAConfig.demo_from_env()
+                    target_svc._oanda_demo = OANDAClient(demo_cfg)
+
+                # Sync target service state with OANDA before executing —
+                # the streaming engine may have opened positions that the
+                # dashboard's LiveService doesn't know about.
+                try:
+                    existing = target_svc._oanda_demo.get_open_trades(pair)
+                    if existing:
+                        t = existing[0]
+                        direction = "BUY" if t.units > 0 else "SELL"
+                        target_svc._demo_trade_id = t.trade_id
+                        target_svc._demo_trade_direction = direction
+                        target_svc._demo_trade_entry = t.price
+                        logger.info(
+                            "Inspection sync: found existing %s position %s on %s",
+                            direction, t.trade_id, target_model,
+                        )
+                    else:
+                        target_svc._demo_trade_id = None
+                        target_svc._demo_trade_direction = None
+                except Exception as sync_err:
+                    logger.warning("Inspection OANDA sync failed: %s", sync_err)
+
                 # Get current price
                 price_data = target_svc._oanda_demo.get_price(pair)
                 current_price = round((price_data["bid"] + price_data["ask"]) / 2, 5)

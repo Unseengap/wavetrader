@@ -328,8 +328,10 @@ class LLMArbiter:
             "temperature": self.config.temperature,
             "max_output_tokens": 4096 if allow_thinking else 1024,
         }
+        # Gemini 2.5 models require thinking mode; use a small budget
+        # for fast signal evals, uncapped for deep inspections
         if not allow_thinking:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=1024)
 
         for attempt in range(self.config.max_retries + 1):
             try:
