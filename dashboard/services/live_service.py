@@ -18,6 +18,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -627,8 +628,13 @@ class LiveService:
         entry_bars = tf_history.get(self._timeframe, [])[-self._arbiter_config.recent_bars_count:]
 
         # Calendar events
-        events = self._calendar.get_upcoming(self._pair, hours_ahead=4)
-        has_high_impact = any(e.impact == "high" for e in events)
+        events = []
+        has_high_impact = False
+        try:
+            events = self._calendar.get_upcoming(self._pair, hours_ahead=4)
+            has_high_impact = any(e.impact == "high" for e in events)
+        except Exception as e:
+            logger.debug("Calendar fetch for arbiter failed: %s", e)
 
         # Portfolio state
         balance = 0.0
@@ -970,6 +976,8 @@ class LiveService:
                     prefix = "wavefollower_"
                 elif model_type == "meanrev":
                     prefix = "mean_reversion_"
+                elif model_type == "amd_scalper":
+                    prefix = "amd_scalper_"
                 else:
                     prefix = "wavetrader_mtf_"
                 subdirs = sorted(
@@ -995,6 +1003,11 @@ class LiveService:
                             from wavetrader.config import MeanRevConfig
                             self._model_config = MeanRevConfig(pair=self._pair)
                             self._model = MeanReversion(self._model_config)
+                        elif model_type == "amd_scalper":
+                            from wavetrader.amd_scalper import AMDScalper
+                            from wavetrader.config import AMDScalperConfig
+                            self._model_config = AMDScalperConfig(pair=self._pair)
+                            self._model = AMDScalper(self._model_config)
                         else:
                             from wavetrader.config import MTFConfig
                             from wavetrader.model import WaveTraderMTF
@@ -1315,6 +1328,22 @@ class LiveService:
                                         arbiter_decision = self._evaluate_with_arbiter(
                                             signal, tf_history, c.close,
                                         )
+                                    except Exception as e:
+                                        logger.error("Arbiter context build failed: %s", e)
+                                        # Create a fallback APPROVE so we still broadcast
+                                        from wavetrader.llm_arbiter import ArbiterDecision
+                                        from datetime import datetime, timezone
+                                        arbiter_decision = ArbiterDecision(
+                                            decision_id=str(uuid.uuid4())[:12],
+                                            action="APPROVE",
+                                            reasoning=f"Arbiter context error — defaulting to APPROVE: {e}",
+                                            model_used="none",
+                                            timestamp=datetime.now(timezone.utc).isoformat(),
+                                            original_signal=signal.get("signal", "?"),
+                                            original_confidence=signal.get("confidence", 0),
+                                            entry_price=c.close,
+                                        )
+                                    try:
                                         # Apply decision to signal
                                         signal = self._arbiter.apply_decision(
                                             signal, arbiter_decision,
@@ -1331,7 +1360,7 @@ class LiveService:
                                         self._arbiter_decisions.append(dec_dict)
                                         self._arbiter_decisions = self._arbiter_decisions[-100:]
                                     except Exception as e:
-                                        logger.error("Arbiter evaluation failed: %s", e)
+                                        logger.error("Arbiter broadcast/log failed: %s", e)
 
                                 self.broadcaster.publish("signal", signal)
                                 # Auto-execute trade on both accounts

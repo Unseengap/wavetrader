@@ -39,6 +39,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Init footer log terminal
     initLogTerminal();
 
+    // Init LLM Arbiter panel (load status, decisions, wire dropdown)
+    if (typeof initArbiterPanel === 'function') initArbiterPanel();
+
     // Auto-start live mode on page load
     await startLiveMode();
 });
@@ -89,6 +92,8 @@ async function switchModel() {
     // Disconnect current SSE, restart with new model
     disconnectSSE();
     await startLiveMode();
+    // Refresh arbiter panel for the new model
+    if (typeof initArbiterPanel === 'function') initArbiterPanel();
 }
 
 async function startLiveMode() {
