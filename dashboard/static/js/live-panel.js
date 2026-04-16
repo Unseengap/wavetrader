@@ -90,7 +90,10 @@ function connectSSE() {
     disconnectSSE();
 
     const model = (typeof currentModel !== 'undefined') ? currentModel : 'mtf';
-    eventSource = new EventSource(`/api/live/stream?model=${encodeURIComponent(model)}`);
+    const strategy = (typeof currentStrategy !== 'undefined') ? currentStrategy : '';
+    let sseUrl = `/api/live/stream?model=${encodeURIComponent(model)}`;
+    if (strategy) sseUrl += `&strategy=${encodeURIComponent(strategy)}`;
+    eventSource = new EventSource(sseUrl);
 
     eventSource.onopen = () => {
         setText('connection-status',  '');
@@ -602,15 +605,30 @@ function appendSignalLog(signal) {
 
     const color = signal.signal === 'BUY' ? 'var(--wt-green)' : signal.signal === 'SELL' ? 'var(--wt-red)' : 'var(--wt-text-muted)';
     const ts = signal.timestamp ? new Date(signal.timestamp).toLocaleTimeString() : '—';
+
+    // Strategy metadata (present when strategy-driven)
+    const stratName = signal.strategy_name || '';
+    const stratReason = signal.strategy_reason || '';
+    const stratBadge = stratName
+        ? `<span class="wt-strategy-badge">${stratName}</span>`
+        : '';
+    const reasonLine = stratReason
+        ? `<div class="wt-signal-reason">${stratReason}</div>`
+        : '';
+
     const html = `
-        <div class="wt-signal-log-entry" style="padding:0.35rem 0.5rem;border-bottom:1px solid var(--wt-border);font-size:0.78rem">
+        <div class="wt-signal-log-entry">
             <div style="display:flex;justify-content:space-between;align-items:center">
-                <span style="color:${color};font-weight:600">${signal.signal}</span>
+                <span style="display:flex;align-items:center;gap:6px">
+                    <span style="color:${color};font-weight:600">${signal.signal}</span>
+                    ${stratBadge}
+                </span>
                 <span style="color:var(--wt-text-muted);font-size:0.68rem">${ts}</span>
             </div>
             <div style="color:var(--wt-text-muted);font-size:0.68rem">
                 Conf: ${(signal.confidence * 100).toFixed(1)}% | Align: ${(signal.alignment * 100).toFixed(1)}% | SL: ${signal.sl_pips.toFixed(1)} | TP: ${signal.tp_pips.toFixed(1)}
             </div>
+            ${reasonLine}
         </div>
     `;
     log.insertAdjacentHTML('afterbegin', html);

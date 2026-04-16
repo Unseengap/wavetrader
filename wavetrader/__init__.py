@@ -57,7 +57,7 @@ Utils
 """
 
 from .backtest import BacktestEngine, run_backtest, walk_forward_backtest
-from .config import AMDScalperConfig, BacktestConfig, MeanRevConfig, MTFConfig, ResonanceConfig, SIConfig, SignalConfig
+from .config import BacktestConfig, MTFConfig, ResonanceConfig, SIConfig, SignalConfig
 from .data import (
     detect_gaps,
     filter_flash_crashes,
@@ -85,12 +85,6 @@ from .training import (
     walk_forward_splits,
 )
 from .types import BacktestResults, Signal, StructureType, Trade, TradeSignal
-from .mean_reversion import MeanReversion
-from .train_mean_reversion import MeanRevLoss
-from .amd_scalper import AMDScalper
-from .train_amd_scalper import AMDScalperLoss
-from .amd_features import build_amd_features
-from .amd_dataset import AMDForexDataset, amd_collate_fn
 from .utils import (
     chronological_split,
     chronological_split_mtf,

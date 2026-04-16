@@ -1,5 +1,5 @@
 """
-Live streaming API routes — SSE stream, OANDA candles, account, model signals.
+Live streaming API routes — SSE stream, OANDA candles, account, model/strategy signals.
 """
 from flask import Blueprint, Response, jsonify, request
 
@@ -12,6 +12,26 @@ live_bp = Blueprint("live", __name__)
 def _model_id() -> str:
     """Extract the model ID from the query string, defaulting to the registry default."""
     return request.args.get("model", get_model_registry().default_id)
+
+
+def _strategy_id() -> str:
+    """Extract the strategy ID from the query string."""
+    return request.args.get("strategy", "")
+
+
+# ── Strategy Registry ─────────────────────────────────────────────────────────
+
+@live_bp.route("/strategies", methods=["GET"])
+def list_strategies():
+    """Return all configured strategies (for the strategy dropdown)."""
+    try:
+        from wavetrader.strategies.registry import get_strategy_registry
+        reg = get_strategy_registry()
+        return jsonify({
+            "strategies": reg.to_list(),
+        })
+    except Exception as e:
+        return jsonify({"strategies": [], "error": str(e)})
 
 
 # ── Model Registry ────────────────────────────────────────────────────────────
@@ -56,9 +76,10 @@ def start_stream():
     pair = data.get("pair", "GBP/JPY")
     tf = data.get("timeframe", "15min")
     model = data.get("model", get_model_registry().default_id)
+    strategy = data.get("strategy", "")
 
     svc = get_live_service(model)
-    result = svc.start(pair, tf)
+    result = svc.start(pair, tf, strategy=strategy)
     return jsonify(result)
 
 

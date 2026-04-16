@@ -23,12 +23,15 @@
         <a href="/backtest" class="wt-nav-link"><i class="bi bi-bar-chart-line"></i> Backtest</a>
     </div>
 
-    <!-- Model Selector -->
+    <!-- Strategy Selector -->
     <div class="wt-nav-controls">
-        <select id="nav-model-select" title="Select AI model">
-            <option value="mtf">WaveTrader MTF</option>
+        <select id="nav-strategy-select" title="Select trading strategy">
+            <option value="">Loading strategies…</option>
         </select>
     </div>
+
+    <!-- Model (hidden, kept for legacy) -->
+    <input type="hidden" id="nav-model-select" value="mtf">
 
     <!-- Pair Selector -->
     <div class="wt-nav-controls">
@@ -485,6 +488,19 @@
                             </button>
                         </div>
                         <div class="wt-arbiter-detail-body">
+                            <!-- Strategy Info -->
+                            <div class="wt-arbiter-detail-section" id="arbiter-detail-strategy-section" style="display:none">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-diagram-3"></i> Strategy</div>
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <span id="arbiter-detail-strategy-name" class="wt-strategy-badge" style="font-size:0.78rem"></span>
+                                    <span id="arbiter-detail-strategy-id" style="color:var(--wt-text-muted);font-size:0.72rem;font-family:monospace"></span>
+                                </div>
+                            </div>
+                            <!-- Narrative (Strategy Voice) -->
+                            <div class="wt-arbiter-detail-section" id="arbiter-detail-narrative-section" style="display:none">
+                                <div class="wt-arbiter-detail-section-title"><i class="bi bi-chat-quote"></i> Strategy Narrative</div>
+                                <div id="arbiter-detail-narrative" class="wt-narrative-text" style="font-size:0.82rem;line-height:1.6"></div>
+                            </div>
                             <!-- Reasoning -->
                             <div class="wt-arbiter-detail-section">
                                 <div class="wt-arbiter-detail-section-title"><i class="bi bi-chat-text"></i> LLM Reasoning</div>

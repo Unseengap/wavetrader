@@ -4,8 +4,8 @@
  * loads defaults, cached results, and wires up event listeners.
  */
 
-// Current model (persisted in localStorage)
-let currentBacktestModel = localStorage.getItem('wt-backtest-model') || 'mtf';
+// Current strategy (persisted in localStorage)
+let currentBacktestStrategy = localStorage.getItem('wt-backtest-strategy') || '';
 
 document.addEventListener('DOMContentLoaded', async () => {
     // Init TradingView chart
@@ -17,8 +17,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Init footer log terminal
     initLogTerminal();
 
-    // Populate model dropdown from API
-    await populateModelDropdown();
+    // Populate strategy dropdown from API
+    await populateStrategyDropdown();
 
     // Load defaults into form
     await loadDefaults();
@@ -28,9 +28,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tf = document.getElementById('nav-tf-select').value || '1h';
     await chartManager.loadCandles(pair, tf);
 
-    // Try loading cached results for the selected model
-    await loadCachedResults();
-
     // Set up event listeners
     setupBacktestEventListeners();
     setupSidebarToggles();
@@ -38,27 +35,75 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupKeyboardShortcuts();
 });
 
-async function populateModelDropdown() {
-    const select = document.getElementById('nav-model-select');
-    if (!select) return;
-    try {
-        const resp = await fetch('/api/live/models');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.models && data.models.length) {
-            select.innerHTML = data.models.map(m =>
-                `<option value="${m.id}" ${m.id === currentBacktestModel ? 'selected' : ''}>${m.name}</option>`
-            ).join('');
-        }
-    } catch (err) { /* keep default option */ }
+// Strategies announced but not yet implemented
+const COMING_SOON_STRATEGIES = [
+    { name: 'AMD Session Scalper', category: 'scalper' },
+    { name: 'Supply & Demand Zones', category: 'swing' },
+    { name: 'ICT / Smart Money Concepts', category: 'swing' },
+    { name: 'ORB Breakout + Pullback', category: 'scalper' },
+    { name: 'EMA Crossover + Trend', category: 'trend' },
+    { name: 'Mean Reversion (Bollinger/RSI)', category: 'mean-reversion' },
+    { name: 'Structure Break & Retest', category: 'swing' },
+];
 
-    select.addEventListener('change', async (e) => {
-        currentBacktestModel = e.target.value;
-        localStorage.setItem('wt-backtest-model', currentBacktestModel);
-        // Reload cached results for the newly selected model
-        currentResults = null;
-        await loadCachedResults();
+function _appendComingSoon(select, liveIds) {
+    const announced = COMING_SOON_STRATEGIES.filter(s => !liveIds.has(s.name));
+    if (!announced.length) return;
+    const sep = document.createElement('option');
+    sep.disabled = true;
+    sep.textContent = '── Coming Soon ──────────';
+    sep.style.color = '#666';
+    select.appendChild(sep);
+    announced.forEach(s => {
+        const opt = document.createElement('option');
+        opt.disabled = true;
+        opt.value = '';
+        opt.textContent = `🔒 ${s.name}`;
+        opt.style.color = '#555';
+        opt.title = `${s.category} — under development`;
+        select.appendChild(opt);
     });
+}
+
+async function populateStrategyDropdown() {
+    const select = document.getElementById('nav-strategy-select');
+    if (!select) return;
+    const liveIds = new Set();
+    try {
+        const resp = await fetch('/api/backtest/strategies');
+        if (!resp.ok) return;
+        const strategies = await resp.json();
+        if (strategies && strategies.length) {
+            select.innerHTML = strategies.map(s => {
+                liveIds.add(s.name);
+                return `<option value="${s.id}" ${s.id === currentBacktestStrategy ? 'selected' : ''}>${s.name} — ${s.author}</option>`;
+            }).join('');
+            if (!currentBacktestStrategy && strategies.length) {
+                currentBacktestStrategy = strategies[0].id;
+            }
+            select.value = currentBacktestStrategy;
+        } else {
+            select.innerHTML = '<option value="" disabled selected>No strategies yet</option>';
+        }
+    } catch (err) {
+        console.warn('Could not load strategy list:', err);
+        select.innerHTML = '<option value="" disabled selected>No strategies yet</option>';
+    }
+    _appendComingSoon(select, liveIds);
+
+    select.addEventListener('change', (e) => {
+        currentBacktestStrategy = e.target.value;
+        localStorage.setItem('wt-backtest-strategy', currentBacktestStrategy);
+        // Fetch and render strategy-specific params
+        if (typeof loadStrategyParams === 'function') {
+            loadStrategyParams(currentBacktestStrategy);
+        }
+    });
+
+    // Load params for the initially selected strategy
+    if (currentBacktestStrategy && typeof loadStrategyParams === 'function') {
+        loadStrategyParams(currentBacktestStrategy);
+    }
 }
 
 function setupBacktestEventListeners() {
@@ -124,58 +169,6 @@ function setupBacktestEventListeners() {
         input.addEventListener('input', updateRangeDisplays);
     });
 }
-
-// ── Live Data Overlay for Backtest Chart ─────────────────────────────────
-
-let backtestSSE = null;
-
-/**
- * Connect SSE to stream live candles onto the backtest chart.
- * This appends real-time candle data after the historical data ends.
- */
-function connectBacktestLiveFeed() {
-    if (backtestSSE) {
-        backtestSSE.close();
-        backtestSSE = null;
-    }
-
-    // Start the live stream server-side first
-    const pair = document.getElementById('cfg-pair')?.value || 'GBP/JPY';
-    fetch('/api/live/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pair, timeframe: '15min' }),
-    }).catch(() => {});
-
-    backtestSSE = new EventSource('/api/live/stream');
-
-    backtestSSE.addEventListener('candle', (e) => {
-        if (!chartManager) return;
-        try {
-            const c = JSON.parse(e.data);
-            const t = typeof c.time === 'number' ? c.time : Math.floor(new Date(c.time).getTime() / 1000);
-            if (!t || isNaN(t)) return;
-            chartManager.candleSeries.update({
-                time: t, open: c.open, high: c.high, low: c.low, close: c.close,
-            });
-            chartManager.volumeSeries.update({
-                time: t, value: c.volume,
-                color: c.close >= c.open ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)',
-            });
-        } catch (err) {
-            console.error('backtest live candle parse error:', err);
-        }
-    });
-
-    backtestSSE.onerror = () => {
-        // Silent reconnect (EventSource auto-reconnects)
-    };
-}
-
-// Auto-connect live feed after page loads
-setTimeout(() => {
-    connectBacktestLiveFeed();
-}, 2000);
 
 // ── Navigate to trade from chart click (backtest version) ───────────────
 

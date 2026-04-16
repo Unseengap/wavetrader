@@ -80,6 +80,25 @@ function renderArbiterDecisions() {
         const tradePlaced = dec.trade_placed;
         const latency = dec.latency_ms ? Math.round(dec.latency_ms) : 0;
 
+        // Strategy metadata
+        const stratName = dec.strategy_name || '';
+        const stratBadge = stratName
+            ? `<span class="wt-strategy-badge">${stratName}</span>`
+            : '';
+
+        // Narrative (LLM strategy voice)
+        const narrative = dec.narrative || '';
+        const shortNarrative = narrative.length > 120 ? narrative.substring(0, 120) + '…' : narrative;
+        const narrativeHtml = shortNarrative
+            ? `<div class="wt-narrative-text">${shortNarrative}</div>`
+            : '';
+
+        // Risk notes indicator
+        const riskNotes = dec.risk_notes || '';
+        const riskIcon = riskNotes
+            ? '<i class="bi bi-exclamation-triangle-fill" style="color:var(--wt-yellow,#d29922);font-size:0.68rem" title="Risk notes available"></i>'
+            : '';
+
         // Outcome status
         const outcome = dec.outcome;
         let outcomeHtml = '';
@@ -98,10 +117,13 @@ function renderArbiterDecisions() {
             <div class="wt-arbiter-decision-main">
                 <span class="wt-arbiter-action-badge ${actionClass}">${action}</span>
                 <span class="wt-arbiter-signal-badge ${signal.toLowerCase()}">${signal}</span>
+                ${stratBadge}
                 <span style="font-size:0.72rem;color:var(--wt-text-muted)">${pair}</span>
                 <span style="font-size:0.72rem;color:var(--wt-text-muted)">Conf: ${conf}%</span>
+                ${riskIcon}
                 <span style="flex:1;font-size:0.72rem;color:var(--wt-text);opacity:0.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${shortReason}</span>
             </div>
+            ${narrativeHtml}
             <div class="wt-arbiter-decision-meta">
                 ${tradePlaced ? '<i class="bi bi-check-circle-fill" style="color:var(--wt-green);font-size:0.7rem" title="Trade placed"></i>' : '<i class="bi bi-dash-circle" style="color:var(--wt-text-muted);font-size:0.7rem" title="No trade"></i>'}
                 ${outcomeHtml}
@@ -171,6 +193,31 @@ function openArbiterDetail(decisionId) {
 
     setText('arbiter-detail-signal', `${dec.original_signal || '?'} → ${dec.modified_signal || dec.original_signal || '?'}`);
     setText('arbiter-detail-pair', dec.pair || '');
+
+    // Strategy info
+    const stratSection = document.getElementById('arbiter-detail-strategy-section');
+    if (stratSection) {
+        if (dec.strategy_name) {
+            stratSection.style.display = 'block';
+            setText('arbiter-detail-strategy-name', dec.strategy_name);
+            setText('arbiter-detail-strategy-id', dec.strategy_id || '');
+        } else {
+            stratSection.style.display = 'none';
+        }
+    }
+
+    // Narrative (strategy voice)
+    const narrativeSection = document.getElementById('arbiter-detail-narrative-section');
+    const narrativeEl = document.getElementById('arbiter-detail-narrative');
+    if (narrativeSection && narrativeEl) {
+        if (dec.narrative) {
+            narrativeSection.style.display = 'block';
+            narrativeEl.textContent = dec.narrative;
+        } else {
+            narrativeSection.style.display = 'none';
+        }
+    }
+
     document.getElementById('arbiter-detail-reasoning').textContent = dec.reasoning || 'No reasoning provided';
 
     // Risk notes

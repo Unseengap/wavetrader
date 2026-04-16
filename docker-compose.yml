@@ -1,5 +1,5 @@
 services:
-  # ── Model A: WaveTrader MTF (existing) ──────────────────────────────────
+  # ── AI Model: WaveTrader MTF (kept as confirmation engine) ──────────────
   wavetrader-mtf:
     build: .
     image: wavetrader:latest
@@ -35,122 +35,62 @@ services:
         max-size: "50m"
         max-file: "5"
 
-  # ── Model B: WaveFollower (trend-following) ──────────────────────────────
-  # Uses OANDA account 101-001-30902818-002 (same user, separate account)
-  wavetrader-wavefollower:
-    build: .
-    image: wavetrader:latest
-    container_name: wavetrader-wavefollower
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    volumes:
-      - ./data:/data:rw
-      - ./checkpoints:/checkpoints:rw
-      - ./logs:/app/logs:rw
-    env_file:
-      - .env
-    environment:
-      - CHECKPOINT_DIR=/data/checkpoints
-      - CHECKPOINT_INTERVAL=100
-      - MODEL_ID=wavefollower
-      - OANDA_API_KEY=${WF_OANDA_DEMO_API_KEY}
-      - OANDA_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
-      - OANDA_DEMO_API_KEY=${WF_OANDA_DEMO_API_KEY}
-      - OANDA_DEMO_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
-      - OANDA_ENVIRONMENT=practice
-      - CHECKPOINT_PATH=/checkpoints/wavefollower_20260412_023912/model_weights.pt
-      - PAIR=GBP/JPY
-      - MIN_CONFIDENCE=0.55
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
-      - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
-    depends_on:
-      - redis
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
+  # ── DEPRECATED: Model B (WaveFollower) — replaced by strategies ──────────
+  # Uncomment to run legacy model-based trading
+  # wavetrader-wavefollower:
+  #   build: .
+  #   image: wavetrader:latest
+  #   container_name: wavetrader-wavefollower
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./data:/data:rw
+  #     - ./checkpoints:/checkpoints:rw
+  #     - ./logs:/app/logs:rw
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - MODEL_ID=wavefollower
+  #     - OANDA_API_KEY=${WF_OANDA_DEMO_API_KEY}
+  #     - OANDA_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID}
+  #   depends_on:
+  #     - redis
 
-  # ── Model C: MeanReversion (mean-reversion) ─────────────────────────────
-  # Uses its own OANDA account (separate from MTF and WaveFollower)
-  wavetrader-meanrev:
-    build: .
-    image: wavetrader:latest
-    container_name: wavetrader-meanrev
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    volumes:
-      - ./data:/data:rw
-      - ./checkpoints:/checkpoints:rw
-      - ./logs:/app/logs:rw
-    env_file:
-      - .env
-    environment:
-      - CHECKPOINT_DIR=/data/checkpoints
-      - CHECKPOINT_INTERVAL=100
-      - MODEL_ID=meanrev
-      - OANDA_API_KEY=${MR_OANDA_DEMO_API_KEY}
-      - OANDA_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID}
-      - OANDA_DEMO_API_KEY=${MR_OANDA_DEMO_API_KEY}
-      - OANDA_DEMO_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID}
-      - OANDA_ENVIRONMENT=practice
-      - PAIR=GBP/JPY
-      - MIN_CONFIDENCE=0.55
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
-      - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
-    depends_on:
-      - redis
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
+  # ── DEPRECATED: Model C (MeanReversion) — replaced by strategies ────────
+  # wavetrader-meanrev:
+  #   ...
 
-  # ── Model D: AMDScalper (5-min session manipulation reversal) ──────────────
-  # Uses its own OANDA account (separate from other models)
-  wavetrader-amd-scalper:
+  # ── DEPRECATED: Model D (AMDScalper) — replaced by strategies ──────────
+  # wavetrader-amd-scalper:
+  #   ...
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # STRATEGY SERVICES — rule-based, AI-confirmed live trading
+  # Each strategy runs in its own container with its own OANDA account.
+  # All share the WaveTrader MTF checkpoint (read-only) for AI confirmation.
+  # ══════════════════════════════════════════════════════════════════════════
+  # Strategy services — add back as strategies are created and validated
+  # ══════════════════════════════════════════════════════════════════════════
+
+  strategy-price-action-reversal:
     build: .
     image: wavetrader:latest
-    container_name: wavetrader-amd-scalper
+    container_name: strategy-price-action-reversal
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     volumes:
       - ./data:/data:rw
-      - ./checkpoints:/checkpoints:rw
+      - ./checkpoints:/checkpoints:ro
       - ./logs:/app/logs:rw
     env_file:
       - .env
     environment:
-      - CHECKPOINT_DIR=/data/checkpoints
-      - CHECKPOINT_INTERVAL=100
-      - MODEL_ID=amd_scalper
-      - OANDA_API_KEY=${AS_OANDA_DEMO_API_KEY}
-      - OANDA_ACCOUNT_ID=${AS_OANDA_DEMO_ACCOUNT_ID}
-      - OANDA_DEMO_API_KEY=${AS_OANDA_DEMO_API_KEY}
-      - OANDA_DEMO_ACCOUNT_ID=${AS_OANDA_DEMO_ACCOUNT_ID}
-      - OANDA_ENVIRONMENT=practice
+      - STRATEGY_ID=price_action_reversal
+      - AI_CHECKPOINT_PATH=/checkpoints
       - PAIR=GBP/JPY
-      - MIN_CONFIDENCE=0.55
+      - OANDA_API_KEY=${PAR_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - OANDA_ACCOUNT_ID=${PAR_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - OANDA_ENVIRONMENT=practice
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
-      - LLM_AUTHORITY_MODE=${LLM_AUTHORITY_MODE:-override}
-      - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
     depends_on:
       - redis
     logging:
@@ -189,18 +129,35 @@ services:
       # Model registry — JSON array of model definitions
       # For a single model, this can be omitted (falls back to default MTF)
       - MODEL_REGISTRY=${MODEL_REGISTRY:-}
-      # Model A (MTF) — OANDA credentials
+      # Strategy registry — JSON array of strategy definitions (optional)
+      - STRATEGY_REGISTRY=${STRATEGY_REGISTRY:-}
+      # AI Confirmer checkpoint (shared WaveTrader MTF)
+      - AI_CHECKPOINT_PATH=/checkpoints
+      # Model A (MTF) — OANDA credentials (used for AI confirmation)
       - OANDA_DEMO_API_KEY=${OANDA_DEMO_API_KEY}
       - OANDA_DEMO_ACCOUNT_ID=${MTF_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
       - OANDA_LIVE_API_KEY=${OANDA_LIVE_API_KEY:-}
       - OANDA_LIVE_ACCOUNT_ID=${MTF_OANDA_LIVE_ACCOUNT_ID:-${OANDA_LIVE_ACCOUNT_ID:-}}
-      # Model B (WaveFollower) — OANDA credentials
+      # Per-strategy OANDA accounts
+      - AMD_OANDA_DEMO_API_KEY=${AMD_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - AMD_OANDA_DEMO_ACCOUNT_ID=${AMD_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - SND_OANDA_DEMO_API_KEY=${SND_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - SND_OANDA_DEMO_ACCOUNT_ID=${SND_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - ICT_OANDA_DEMO_API_KEY=${ICT_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - ICT_OANDA_DEMO_ACCOUNT_ID=${ICT_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - ORB_OANDA_DEMO_API_KEY=${ORB_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - ORB_OANDA_DEMO_ACCOUNT_ID=${ORB_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - EMA_OANDA_DEMO_API_KEY=${EMA_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - EMA_OANDA_DEMO_ACCOUNT_ID=${EMA_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - MR_OANDA_DEMO_API_KEY=${MR_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - MR_OANDA_DEMO_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - SB_OANDA_DEMO_API_KEY=${SB_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - SB_OANDA_DEMO_ACCOUNT_ID=${SB_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - PAR_OANDA_DEMO_API_KEY=${PAR_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - PAR_OANDA_DEMO_ACCOUNT_ID=${PAR_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      # Legacy model OANDA accounts (backwards compat)
       - WF_OANDA_DEMO_API_KEY=${WF_OANDA_DEMO_API_KEY:-}
       - WF_OANDA_DEMO_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID:-}
-      # Model C (MeanReversion) — OANDA credentials
-      - MR_OANDA_DEMO_API_KEY=${MR_OANDA_DEMO_API_KEY:-}
-      - MR_OANDA_DEMO_ACCOUNT_ID=${MR_OANDA_DEMO_ACCOUNT_ID:-}
-      # Model D (AMDScalper) — OANDA credentials
       - AS_OANDA_DEMO_API_KEY=${AS_OANDA_DEMO_API_KEY:-}
       - AS_OANDA_DEMO_ACCOUNT_ID=${AS_OANDA_DEMO_ACCOUNT_ID:-}
       # LLM Arbiter (Gemini)

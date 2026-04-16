@@ -1066,9 +1066,9 @@ class StreamingEngine:
     def _update_trailing_stop(self, candle: Candle) -> None:
         """Update trailing stop on open position.
 
-        Uses the same formula as backtest.py: trail_distance = initial_risk * (1 - pct),
-        floored by min_trail_pips so the stop never gets tighter than that distance
-        from the peak price.
+        Uses the same formula as backtest.py: trail_distance = initial_risk * (1 - pct).
+        Trailing only activates after price moves >= 1R in our favor (prevents
+        premature SL tightening on entry). Floor = 50% of initial risk.
         """
         if not self.open_trade_id or self.open_trade_trailing_pct <= 0:
             logger.debug(
@@ -1077,10 +1077,6 @@ class StreamingEngine:
             )
             return
 
-        from wavetrader.config import DEFAULT_RISK_SCALING
-        pip = _PIP_SIZE.get(self.pair, 0.01)
-        min_trail = DEFAULT_RISK_SCALING.min_trail_pips * pip
-
         if self.open_trade_direction == Signal.BUY:
             # Only recalculate trailing SL when a new peak forms (matches backtest)
             if candle.high > self.open_trade_peak:
@@ -1088,7 +1084,12 @@ class StreamingEngine:
                 entry = self.open_trade_entry or candle.close
                 initial_risk = entry - (self.open_trade_initial_sl or entry)
                 if initial_risk > 0:
+                    # Only start trailing after price moves >= 1R in our favor
+                    unrealised_r = (self.open_trade_peak - entry) / initial_risk
+                    if unrealised_r < 1.0:
+                        return
                     trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
+                    min_trail = initial_risk * 0.5
                     trail_distance = max(trail_distance, min_trail)
                     new_sl = self.open_trade_peak - trail_distance
                     if self.open_trade_sl and new_sl > self.open_trade_sl:
@@ -1119,7 +1120,12 @@ class StreamingEngine:
                 entry = self.open_trade_entry or candle.close
                 initial_risk = (self.open_trade_initial_sl or entry) - entry
                 if initial_risk > 0:
+                    # Only start trailing after price moves >= 1R in our favor
+                    unrealised_r = (entry - self.open_trade_peak) / initial_risk
+                    if unrealised_r < 1.0:
+                        return
                     trail_distance = initial_risk * (1.0 - self.open_trade_trailing_pct)
+                    min_trail = initial_risk * 0.5
                     trail_distance = max(trail_distance, min_trail)
                     new_sl = self.open_trade_peak + trail_distance
                     if self.open_trade_sl and new_sl < self.open_trade_sl:
@@ -1259,16 +1265,10 @@ def main() -> None:
     checkpoint_path = os.environ.get("CHECKPOINT_PATH")
     model_id = os.environ.get("MODEL_ID", "mtf")
 
-    # Model config — select architecture based on MODEL_ID
-    if model_id == "wavefollower":
-        from .wave_follower import WaveFollower, WaveFollowerConfig
-        model_config = WaveFollowerConfig(pair=pair)
-        model = WaveFollower(model_config)
-        logger.info("Using WaveFollower architecture (MODEL_ID=%s)", model_id)
-    else:
-        model_config = MTFConfig(pair=pair)
-        model = WaveTraderMTF(model_config)
-        logger.info("Using WaveTraderMTF architecture (MODEL_ID=%s)", model_id)
+    # Model config — WaveTrader MTF only
+    model_config = MTFConfig(pair=pair)
+    model = WaveTraderMTF(model_config)
+    logger.info("Using WaveTraderMTF architecture (MODEL_ID=%s)", model_id)
 
     bt_config = BacktestConfig(
         initial_balance=float(os.environ.get("INITIAL_BALANCE", "10000")),

@@ -23,12 +23,15 @@
         <a href="/backtest" class="wt-nav-link active"><i class="bi bi-bar-chart-line"></i> Backtest</a>
     </div>
 
-    <!-- Model Selector -->
+    <!-- Strategy Selector -->
     <div class="wt-nav-controls">
-        <select id="nav-model-select" title="Select AI model">
-            <option value="mtf">WaveTrader MTF</option>
+        <select id="nav-strategy-select" title="Select trading strategy">
+            <option value="">Loading strategies…</option>
         </select>
     </div>
+
+    <!-- Model (hidden, kept for legacy) -->
+    <input type="hidden" id="nav-model-select" value="mtf">
 
     <!-- Pair Selector -->
     <div class="wt-nav-controls">
@@ -108,15 +111,15 @@
 
             <div class="wt-field">
                 <label for="cfg-initial-balance">Initial Balance ($)</label>
-                <input type="number" id="cfg-initial-balance" value="25000" min="1000" step="1000">
+                <input type="number" id="cfg-initial-balance" value="100" min="10" step="10">
             </div>
 
             <div class="wt-field">
                 <label>
                     Risk per Trade
-                    <span class="wt-range-value" data-for="cfg-risk-per-trade" data-suffix="%">1%</span>
+                    <span class="wt-range-value" data-for="cfg-risk-per-trade" data-suffix="%">10%</span>
                 </label>
-                <input type="range" id="cfg-risk-per-trade" min="0.5" max="25" step="0.25" value="1">
+                <input type="range" id="cfg-risk-per-trade" min="0.5" max="25" step="0.25" value="10">
             </div>
 
             <div class="wt-field wt-locked">
@@ -206,6 +209,22 @@
             <div class="wt-field">
                 <label for="cfg-lot-cap">Max Lot Size</label>
                 <input type="number" id="cfg-lot-cap" value="2.0" min="0.1" step="0.1">
+            </div>
+        </div>
+
+        <!-- Strategy Parameters (dynamic — loaded from API) -->
+        <div class="wt-config-section" id="strategy-params-section" style="display:none">
+            <div class="wt-config-section-title" id="strategy-params-title">
+                <i class="bi bi-gear"></i> Strategy Parameters
+            </div>
+            <div id="strategy-params-fields">
+                <!-- Dynamically populated from /api/backtest/strategies/<id>/params -->
+            </div>
+            <div class="wt-field" style="margin-top:0.5rem">
+                <label class="wt-checkbox-label">
+                    <input type="checkbox" id="cfg-ai-confirm" checked>
+                    AI Confirmation (WaveTrader MTF)
+                </label>
             </div>
         </div>
 

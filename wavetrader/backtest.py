@@ -158,6 +158,7 @@ class BacktestEngine:
 
         t = self.open_trade
         self._bars_in_trade += 1
+        activate_r = self.config.trail_activate_r
 
         is_opposite_exit = getattr(t, 'exit_mode', 'tp_sl') == 'opposite_signal'
 
@@ -166,14 +167,20 @@ class BacktestEngine:
                 t.highest_price = current_high
                 if t.trailing_stop_pct > 0:
                     initial_risk = t.entry_price - t.stop_loss
-                    trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
-                    trail_distance = max(trail_distance, self._min_trail_abs)
-                    new_sl = t.highest_price - trail_distance
-                    if new_sl > t.current_sl:
-                        t.current_sl = new_sl
+                    # Only start trailing after price moves >= activate_r × R in our favor
+                    unrealised_r = (t.highest_price - t.entry_price) / max(initial_risk, 1e-9)
+                    if unrealised_r >= activate_r:
+                        trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
+                        # Floor = 50% of initial risk (scales with trade size)
+                        min_trail = initial_risk * 0.5
+                        trail_distance = max(trail_distance, min_trail)
+                        new_sl = t.highest_price - trail_distance
+                        if new_sl > t.current_sl:
+                            t.current_sl = new_sl
 
             if current_low <= t.current_sl:
-                return self.close_position(t.current_sl, timestamp, "Stop Loss")
+                reason = "Trailing Stop" if t.current_sl > t.stop_loss else "Stop Loss"
+                return self.close_position(t.current_sl, timestamp, reason)
             # Skip TP check for opposite_signal exit mode
             if not is_opposite_exit and current_high >= t.take_profit:
                 return self.close_position(t.take_profit, timestamp, "Take Profit")
@@ -183,14 +190,19 @@ class BacktestEngine:
                 t.lowest_price = current_low
                 if t.trailing_stop_pct > 0:
                     initial_risk = t.stop_loss - t.entry_price
-                    trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
-                    trail_distance = max(trail_distance, self._min_trail_abs)
-                    new_sl = t.lowest_price + trail_distance
-                    if new_sl < t.current_sl:
-                        t.current_sl = new_sl
+                    # Only start trailing after price moves >= activate_r × R in our favor
+                    unrealised_r = (t.entry_price - t.lowest_price) / max(initial_risk, 1e-9)
+                    if unrealised_r >= activate_r:
+                        trail_distance = initial_risk * (1.0 - t.trailing_stop_pct)
+                        min_trail = initial_risk * 0.5
+                        trail_distance = max(trail_distance, min_trail)
+                        new_sl = t.lowest_price + trail_distance
+                        if new_sl < t.current_sl:
+                            t.current_sl = new_sl
 
             if current_high >= t.current_sl:
-                return self.close_position(t.current_sl, timestamp, "Stop Loss")
+                reason = "Trailing Stop" if t.current_sl < t.stop_loss else "Stop Loss"
+                return self.close_position(t.current_sl, timestamp, reason)
             # Skip TP check for opposite_signal exit mode
             if not is_opposite_exit and current_low <= t.take_profit:
                 return self.close_position(t.take_profit, timestamp, "Take Profit")

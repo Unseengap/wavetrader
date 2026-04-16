@@ -6,13 +6,20 @@
 
 let chartManager = null;
 let currentModel = localStorage.getItem('wt-selected-model') || 'mtf';
+let currentStrategy = localStorage.getItem('wt-selected-strategy') || '';
 
 /**
  * Return the current model query parameter string, e.g. "&model=mtf".
- * Callers can append this to any URL that needs the model parameter.
  */
 function modelParam(prefix = '&') {
     return `${prefix}model=${encodeURIComponent(currentModel)}`;
+}
+
+/**
+ * Return the current strategy query parameter string, e.g. "&strategy=amd_session".
+ */
+function strategyParam(prefix = '&') {
+    return currentStrategy ? `${prefix}strategy=${encodeURIComponent(currentStrategy)}` : '';
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -24,6 +31,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Load available models into the dropdown, then start
     await loadModelSelector();
+    await loadStrategySelector();
 
     // Wire up event listeners
     setupLiveEventListeners();
@@ -96,16 +104,95 @@ async function switchModel() {
     if (typeof initArbiterPanel === 'function') initArbiterPanel();
 }
 
+async function loadStrategySelector() {
+    const select = document.getElementById('nav-strategy-select');
+    if (!select) return;
+
+    try {
+        const COMING_SOON = [
+            { name: 'AMD Session Scalper', category: 'scalper' },
+            { name: 'Supply & Demand Zones', category: 'swing' },
+            { name: 'ICT / Smart Money Concepts', category: 'swing' },
+            { name: 'ORB Breakout + Pullback', category: 'scalper' },
+            { name: 'EMA Crossover + Trend', category: 'trend' },
+            { name: 'Mean Reversion (Bollinger/RSI)', category: 'mean-reversion' },
+            { name: 'Structure Break & Retest', category: 'swing' },
+        ];
+
+        const resp = await fetch('/api/live/strategies');
+        const data = await resp.json();
+        const strategies = data.strategies || [];
+        const liveNames = new Set(strategies.map(s => s.name));
+
+        select.innerHTML = '';
+        if (strategies.length > 0) {
+            strategies.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.id;
+                opt.textContent = `${s.name} — ${s.author}`;
+                if (s.description) opt.title = s.description;
+                if (s.category) opt.dataset.category = s.category;
+                select.appendChild(opt);
+            });
+        } else {
+            const none = document.createElement('option');
+            none.value = ''; none.disabled = true; none.selected = true;
+            none.textContent = 'No strategies yet';
+            select.appendChild(none);
+        }
+
+        // Append coming-soon placeholders
+        const announced = COMING_SOON.filter(s => !liveNames.has(s.name));
+        if (announced.length) {
+            const sep = document.createElement('option');
+            sep.disabled = true; sep.textContent = '── Coming Soon ──────────'; sep.style.color = '#666';
+            select.appendChild(sep);
+            announced.forEach(s => {
+                const opt = document.createElement('option');
+                opt.disabled = true; opt.value = ''; opt.textContent = `🔒 ${s.name}`;
+                opt.style.color = '#555'; opt.title = `${s.category} — under development`;
+                select.appendChild(opt);
+            });
+        }
+
+        // Restore previously selected strategy
+        const stored = localStorage.getItem('wt-selected-strategy');
+        if (stored && strategies.some(s => s.id === stored)) {
+            currentStrategy = stored;
+        } else if (strategies.length > 0) {
+            currentStrategy = strategies[0].id;
+        }
+        select.value = currentStrategy;
+
+        // On change: switch strategy
+        select.addEventListener('change', async (e) => {
+            currentStrategy = e.target.value;
+            localStorage.setItem('wt-selected-strategy', currentStrategy);
+            showToast(`Switching to ${select.options[select.selectedIndex].text}…`, 'info');
+            await switchStrategy();
+        });
+    } catch (err) {
+        console.warn('Could not load strategy list:', err);
+        select.innerHTML = '<option value="">No strategies</option>';
+    }
+}
+
+async function switchStrategy() {
+    disconnectSSE();
+    await startLiveMode();
+    if (typeof initArbiterPanel === 'function') initArbiterPanel();
+}
+
 async function startLiveMode() {
     const pair = document.getElementById('nav-pair-select').value || 'GBP/JPY';
     const tf = document.getElementById('nav-tf-select').value || '15min';
 
-    // 1. Start the server-side stream for the selected model
+    // 1. Start the server-side stream for the selected strategy/model
     try {
         await fetch('/api/live/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pair, timeframe: '15min', model: currentModel }),
+            body: JSON.stringify({ pair, timeframe: '15min', model: currentModel, strategy: currentStrategy }),
         });
     } catch (err) {
         showToast('Failed to start live stream: ' + err.message, 'error');
@@ -126,9 +213,9 @@ async function startLiveMode() {
     // 6. Load orders
     await loadOrders();
 
-    const modelSelect = document.getElementById('nav-model-select');
-    const modelName = modelSelect ? modelSelect.options[modelSelect.selectedIndex].text : currentModel;
-    showToast(`Live mode active — ${modelName} streaming from OANDA`, 'success');
+    const stratSelect = document.getElementById('nav-strategy-select');
+    const stratName = stratSelect && stratSelect.selectedIndex >= 0 ? stratSelect.options[stratSelect.selectedIndex].text : currentStrategy;
+    showToast(`Live mode active — ${stratName || 'Default'} streaming from OANDA`, 'success');
 }
 
 function setupLiveEventListeners() {

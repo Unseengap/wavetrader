@@ -65,26 +65,6 @@ async function loadDefaults() {
 }
 
 
-// ── Load cached results ─────────────────────────────────────────────────────
-
-async function loadCachedResults() {
-    try {
-        const model = typeof currentBacktestModel !== 'undefined' ? currentBacktestModel : 'mtf';
-        const resp = await fetch(`/api/backtest/cached?model=${model}`);
-        if (!resp.ok) return;
-
-        const results = await resp.json();
-        if (results && !results.error) {
-            currentResults = results;
-            updateDashboard(results);
-            showToast('Loaded cached backtest results', 'info');
-        }
-    } catch (err) {
-        // No cached results — that's fine
-    }
-}
-
-
 // ── Run Backtest ────────────────────────────────────────────────────────────
 
 async function runBacktest() {
@@ -94,8 +74,16 @@ async function runBacktest() {
 
     // Collect config from form
     const config = collectConfig();
-    // Include the selected model so the backend loads the correct architecture
-    config.model = typeof currentBacktestModel !== 'undefined' ? currentBacktestModel : 'mtf';
+    // Include selected strategy — this triggers the strategy backtest path
+    if (typeof currentBacktestStrategy !== 'undefined' && currentBacktestStrategy) {
+        config.strategy = currentBacktestStrategy;
+    }
+
+    // AI confirmation toggle
+    const aiCheckbox = document.getElementById('cfg-ai-confirm');
+    if (aiCheckbox) {
+        config.ai_confirm = aiCheckbox.checked;
+    }
 
     try {
         showToast('Running backtest… This may take a few minutes.', 'info');
@@ -128,7 +116,7 @@ async function runBacktest() {
 // ── Collect Config from Form ────────────────────────────────────────────────
 
 function collectConfig() {
-    return {
+    const cfg = {
         initial_balance: parseFloat(getField('cfg-initial-balance')),
         risk_per_trade: parseFloat(getField('cfg-risk-per-trade')) / 100,
         leverage: parseFloat(getField('cfg-leverage')),
@@ -149,6 +137,133 @@ function collectConfig() {
             lot_cap: parseFloat(getField('cfg-lot-cap')),
         },
     };
+
+    // Include strategy params if a strategy is selected
+    const strategyParams = collectStrategyParams();
+    if (strategyParams && Object.keys(strategyParams).length > 0) {
+        cfg.strategy_params = strategyParams;
+    }
+
+    return cfg;
+}
+
+
+// ── Strategy Parameters (dynamic per-strategy form) ─────────────────────────
+
+/**
+ * Render strategy-specific parameter inputs from the /params API.
+ * @param {Array} params — Array of {name, label, type, default, min, max, step, description}
+ * @param {Object} meta — Strategy metadata {name, author, category}
+ */
+function renderStrategyParams(params, meta) {
+    const section = document.getElementById('strategy-params-section');
+    const container = document.getElementById('strategy-params-fields');
+    if (!section || !container) return;
+
+    if (!params || params.length === 0) {
+        section.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+
+    section.style.display = '';
+    let html = '';
+
+    if (meta && meta.name) {
+        html += `<div class="wt-strategy-meta-badge">
+            <span class="wt-strategy-badge">${meta.category || 'strategy'}</span>
+            <span style="font-size:0.72rem;color:var(--wt-text-muted)">${meta.name}</span>
+        </div>`;
+    }
+
+    for (const p of params) {
+        const id = `cfg-strat-${p.name}`;
+        const tooltip = p.description ? ` title="${p.description}"` : '';
+
+        if (p.type === 'bool') {
+            html += `
+            <div class="wt-field wt-field-checkbox"${tooltip}>
+                <label for="${id}">
+                    <input type="checkbox" id="${id}" ${p.default ? 'checked' : ''}>
+                    ${p.label}
+                </label>
+            </div>`;
+        } else if (p.min !== null && p.max !== null && p.type === 'float') {
+            // Range slider for bounded floats
+            const step = p.step || (p.type === 'int' ? 1 : 0.1);
+            const suffix = p.label.includes('pips') ? ' pips' : p.label.includes('%') ? '%' : '';
+            html += `
+            <div class="wt-field"${tooltip}>
+                <label for="${id}">
+                    ${p.label}
+                    <span class="wt-range-value" data-for="${id}" data-suffix="${suffix}">${p.default}${suffix}</span>
+                </label>
+                <input type="range" id="${id}" min="${p.min}" max="${p.max}" step="${step}" value="${p.default}">
+            </div>`;
+        } else {
+            // Number input
+            const step = p.step || (p.type === 'int' ? 1 : 0.1);
+            const minAttr = p.min !== null ? ` min="${p.min}"` : '';
+            const maxAttr = p.max !== null ? ` max="${p.max}"` : '';
+            html += `
+            <div class="wt-field"${tooltip}>
+                <label for="${id}">${p.label}</label>
+                <input type="number" id="${id}" value="${p.default}" step="${step}"${minAttr}${maxAttr}>
+            </div>`;
+        }
+    }
+
+    container.innerHTML = html;
+
+    // Wire up range display updates for new range inputs
+    container.querySelectorAll('input[type="range"]').forEach(input => {
+        const display = container.querySelector(`.wt-range-value[data-for="${input.id}"]`);
+        if (display) {
+            const suffix = display.dataset.suffix || '';
+            input.addEventListener('input', () => {
+                display.textContent = input.value + suffix;
+            });
+        }
+    });
+}
+
+/**
+ * Collect strategy-specific parameter values from the dynamic form.
+ * @returns {Object} — Dict of param_name → value (typed correctly)
+ */
+function collectStrategyParams() {
+    const container = document.getElementById('strategy-params-fields');
+    if (!container) return {};
+
+    const params = {};
+    container.querySelectorAll('[id^="cfg-strat-"]').forEach(input => {
+        const name = input.id.replace('cfg-strat-', '');
+        if (input.type === 'checkbox') {
+            params[name] = input.checked;
+        } else if (input.type === 'range' || input.type === 'number') {
+            params[name] = parseFloat(input.value);
+        }
+    });
+    return params;
+}
+
+/**
+ * Fetch and render strategy params for the given strategy id.
+ */
+async function loadStrategyParams(strategyId) {
+    if (!strategyId) {
+        renderStrategyParams([], null);
+        return;
+    }
+    try {
+        const resp = await fetch(`/api/backtest/strategies/${encodeURIComponent(strategyId)}/params`);
+        if (!resp.ok) { renderStrategyParams([], null); return; }
+        const data = await resp.json();
+        renderStrategyParams(data.params || [], data.meta || null);
+    } catch (err) {
+        console.warn('Failed to load strategy params:', err);
+        renderStrategyParams([], null);
+    }
 }
 
 

@@ -50,8 +50,8 @@ _RESULTS_DIR = _resolve_dir("backtest_results")
 
 NOTEBOOK_DEFAULTS: Dict[str, Any] = {
     # BacktestConfig
-    "initial_balance": 25_000.0,
-    "risk_per_trade": 0.01,
+    "initial_balance": 100.0,
+    "risk_per_trade": 0.10,
     "leverage": 20.0,
     "spread_pips": 3.0,
     "commission_per_lot": 0.0,
@@ -277,7 +277,243 @@ def load_candles(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Run backtest
+# Strategy backtest (new — strategy-led architecture)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_strategy_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run a strategy-led backtest.  The strategy generates signals and
+    optionally the AI confirmer (WaveTrader MTF) validates them.
+
+    ``user_config`` keys:
+      - strategy: strategy id (e.g. "amd_session")
+      - strategy_params: optional dict of strategy-specific params
+      - ai_confirm: bool (default True) — use AI confirmer
+      - pair, initial_balance, risk_per_trade, ... (same as model backtest)
+    """
+    import torch
+    from wavetrader.config import BacktestConfig
+    from wavetrader.strategy_backtest import run_strategy_backtest
+    from wavetrader.strategies.registry import get_strategy_registry
+    from wavetrader.data import load_mtf_data
+
+    cfg = {**NOTEBOOK_DEFAULTS, **user_config}
+    friction_cfg = {**NOTEBOOK_DEFAULTS["friction"], **cfg.get("friction", {})}
+    pair = cfg["pair"]
+
+    # Resolve strategy
+    strategy_id = cfg.get("strategy", "")
+    if not strategy_id:
+        return {"error": "No strategy specified"}
+
+    registry = get_strategy_registry()
+    strategy_entry = registry.get(strategy_id)
+    if strategy_entry is None:
+        return {"error": f"Unknown strategy: {strategy_id}"}
+
+    strategy_params = cfg.get("strategy_params", {})
+    strategy = registry.instantiate(strategy_id, strategy_params)
+    entry_tf = strategy.meta.entry_timeframe
+
+    # Build BacktestConfig
+    bt_config = BacktestConfig(
+        initial_balance=float(cfg["initial_balance"]),
+        risk_per_trade=float(cfg["risk_per_trade"]),
+        leverage=float(cfg["leverage"]),
+        spread_pips=float(cfg["spread_pips"]),
+        commission_per_lot=float(cfg["commission_per_lot"]),
+        pip_value=float(cfg["pip_value"]),
+        min_confidence=float(cfg["min_confidence"]),
+        atr_halt_multiplier=float(cfg["atr_halt_multiplier"]),
+        drawdown_reduce_threshold=float(cfg["drawdown_reduce_threshold"]),
+    )
+
+    # Load data
+    data_dir = _resolve_dir("data")
+    processed_dir = _resolve_dir("processed_data") / "test"
+    pair_tag = pair.replace("/", "")
+
+    df_dict: Dict[str, pd.DataFrame] = {}
+    for tf in strategy.meta.timeframes:
+        tf_short = tf.replace("min", "m")
+        parquet_path = processed_dir / f"{pair_tag}_{tf_short}.parquet"
+        if parquet_path.exists():
+            try:
+                df = pd.read_parquet(parquet_path)
+                if df.index.name in ("timestamp", "date", "datetime"):
+                    df = df.reset_index()
+                df.columns = [c.strip().lower() for c in df.columns]
+                col_map = {}
+                for base in ("open", "high", "low", "close"):
+                    if f"{base}_mid" in df.columns and base not in df.columns:
+                        col_map[f"{base}_mid"] = base
+                if col_map:
+                    df = df.rename(columns=col_map)
+                if "date" not in df.columns:
+                    for alias in ("datetime", "timestamp", "time"):
+                        if alias in df.columns:
+                            df = df.rename(columns={alias: "date"})
+                            break
+                df_dict[tf] = df
+            except Exception as e:
+                logger.warning("Failed to read parquet %s: %s", parquet_path, e)
+
+    if not df_dict:
+        try:
+            df_dict = load_mtf_data(pair=pair, data_dir=str(data_dir))
+        except Exception as e:
+            logger.error("load_mtf_data failed: %s", e)
+            return {"error": f"Failed to load data for {pair}: {e}"}
+
+    if not df_dict:
+        return {"error": f"No data found for {pair}"}
+
+    logger.info("Strategy backtest data: %s", {k: len(v) for k, v in df_dict.items()})
+
+    # AI confirmer (optional)
+    ai_confirmer = None
+    if cfg.get("ai_confirm", True):
+        try:
+            from wavetrader.strategies.ai_confirmer import AIConfirmer
+            checkpoint_dir = _resolve_dir("checkpoints")
+            # Find the latest MTF checkpoint
+            ckpt_path = _find_latest_checkpoint(checkpoint_dir, "wavetrader_mtf")
+            if ckpt_path:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                ai_confirmer = AIConfirmer(str(ckpt_path), device=device)
+                logger.info("AI Confirmer loaded from %s", ckpt_path)
+        except Exception as e:
+            logger.warning("AI Confirmer failed to load: %s — proceeding without", e)
+
+    # Run strategy backtest
+    start_time = time.time()
+    try:
+        results = run_strategy_backtest(
+            strategy=strategy,
+            candles=df_dict,
+            bt_config=bt_config,
+            ai_confirmer=ai_confirmer,
+            pair=pair,
+            verbose=True,
+        )
+    except Exception as e:
+        logger.error("Strategy backtest crashed:\n%s", traceback.format_exc())
+        return {"error": f"Strategy backtest error: {e}"}
+    elapsed = round(time.time() - start_time, 1)
+    logger.info("Strategy backtest done in %ss — %d trades", elapsed, len(results.trades))
+
+    # Serialize (reuse same format as model backtest)
+    running_balance = float(cfg["initial_balance"])
+    trades_list = []
+    for t in results.trades:
+        td = _trade_to_dict(t)
+        running_balance += td["pnl"]
+        td["balance"] = round(running_balance, 2)
+        trades_list.append(td)
+
+    breakdowns = _compute_breakdowns(trades_list)
+    friction = _apply_friction(trades_list, friction_cfg)
+
+    equity = [round(e, 2) for e in results.equity_curve]
+    if len(equity) > 5000:
+        step = len(equity) // 5000
+        equity = equity[::step]
+
+    # Replay candles
+    replay_candles = _build_replay_candles(df_dict, entry_tf)
+
+    run_id = str(uuid.uuid4())[:8]
+
+    return {
+        "run_id": run_id,
+        "elapsed_seconds": elapsed,
+        "config": cfg,
+        "strategy": {
+            "id": strategy.meta.id,
+            "name": strategy.meta.name,
+            "author": strategy.meta.author,
+            "category": strategy.meta.category,
+            "version": strategy.meta.version,
+        },
+        "ai_confirm_enabled": ai_confirmer is not None,
+        "candles": replay_candles,
+        "metrics": {
+            "total_trades": results.total_trades,
+            "winning_trades": results.winning_trades,
+            "losing_trades": results.losing_trades,
+            "win_rate": round(results.win_rate, 4),
+            "total_pnl": round(results.total_pnl, 2),
+            "profit_factor": round(results.profit_factor, 2),
+            "sharpe_ratio": results.sharpe_ratio,
+            "max_drawdown": round(results.max_drawdown, 4),
+            "final_balance": round(results.final_balance, 2),
+            "return_pct": round(
+                (results.final_balance / bt_config.initial_balance - 1) * 100, 1
+            ),
+        },
+        "trades": trades_list,
+        "equity_curve": equity,
+        "breakdowns": breakdowns,
+        "friction": friction,
+    }
+
+
+def _find_latest_checkpoint(checkpoint_dir: Path, prefix: str) -> Optional[Path]:
+    """Find the newest checkpoint directory matching prefix."""
+    candidates = sorted(
+        [d for d in checkpoint_dir.iterdir() if d.is_dir() and d.name.startswith(prefix)],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for c in candidates:
+        if (c / "model_weights.pt").exists():
+            return c
+    return None
+
+
+def _build_replay_candles(df_dict: Dict[str, pd.DataFrame], entry_tf: str) -> List[Dict]:
+    """Build candle array for chart replay from entry-TF data."""
+    replay_candles = []
+    entry_df = df_dict.get(entry_tf)
+    if entry_df is None:
+        return replay_candles
+    _df = entry_df.copy()
+    _df.columns = [c.strip().lower() for c in _df.columns]
+    col_map = {}
+    for base in ("open", "high", "low", "close"):
+        if f"{base}_mid" in _df.columns and base not in _df.columns:
+            col_map[f"{base}_mid"] = base
+    if col_map:
+        _df = _df.rename(columns=col_map)
+    if "date" not in _df.columns:
+        for alias in ("datetime", "timestamp", "time"):
+            if alias in _df.columns:
+                _df = _df.rename(columns={alias: "date"})
+                break
+    if _df.index.name in ("timestamp", "date", "datetime"):
+        _df = _df.reset_index()
+        if "date" not in _df.columns:
+            for alias in ("datetime", "timestamp", "time"):
+                if alias in _df.columns:
+                    _df = _df.rename(columns={alias: "date"})
+                    break
+    if "date" in _df.columns:
+        _df["date"] = pd.to_datetime(_df["date"], errors="coerce")
+        _df = _df.dropna(subset=["date"]).sort_values("date")
+        for _, row in _df.iterrows():
+            replay_candles.append({
+                "time": int(row["date"].timestamp()),
+                "open": round(float(row["open"]), 5),
+                "high": round(float(row["high"]), 5),
+                "low": round(float(row["low"]), 5),
+                "close": round(float(row["close"]), 5),
+                "volume": float(row.get("volume", 0)),
+            })
+    return replay_candles
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run backtest (legacy model-based)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -296,15 +532,6 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
 
     pair = cfg["pair"]
     entry_tf = cfg["entry_timeframe"]
-
-    # Determine model type from registry
-    model_id = cfg.get("model", "mtf")
-    model_type = "mtf"
-    from .model_registry import get_model_registry
-    registry = get_model_registry()
-    entry = registry.get(model_id)
-    if entry:
-        model_type = getattr(entry, "model_type", "mtf")
 
     # Validate numeric config values
     numeric_keys = [
@@ -331,18 +558,8 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
         drawdown_reduce_threshold=float(cfg["drawdown_reduce_threshold"]),
     )
 
-    # Build model config
-    if model_type == "wavefollower":
-        from wavetrader.wave_follower import WaveFollowerConfig
-        model_config = WaveFollowerConfig(pair=pair)
-    elif model_type == "meanrev":
-        from wavetrader.config import MeanRevConfig
-        model_config = MeanRevConfig(pair=pair)
-    elif model_type == "amd_scalper":
-        from wavetrader.config import AMDScalperConfig
-        model_config = AMDScalperConfig(pair=pair)
-    else:
-        model_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
+    # Build model config (only WaveTrader MTF remains)
+    model_config = MTFConfig(pair=pair, entry_timeframe=entry_tf)
 
     # Load data
     data_dir = _resolve_dir("data")
@@ -393,7 +610,7 @@ def run_backtest_from_config(user_config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Load model from checkpoint
     checkpoint_dir = _resolve_dir("checkpoints")
-    model = _load_latest_model(checkpoint_dir, model_config, model_type=model_type)
+    model = _load_latest_model(checkpoint_dir, model_config)
 
     if model is None:
         return {"error": "No model checkpoint found. Train a model first."}
@@ -726,23 +943,14 @@ def _compute_breakdowns(trades: List[Dict]) -> Dict:
 # Model loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_latest_model(checkpoint_dir: Path, config: Any,
-                       model_type: str = "mtf") -> Any:
-    """Find and load the most recent model checkpoint."""
+def _load_latest_model(checkpoint_dir: Path, config: Any) -> Any:
+    """Find and load the most recent WaveTrader MTF model checkpoint."""
     import torch
 
     if not checkpoint_dir.exists():
         return None
 
-    # Filter checkpoint subdirs by model type prefix
-    if model_type == "wavefollower":
-        prefix = "wavefollower_"
-    elif model_type == "meanrev":
-        prefix = "mean_reversion_"
-    elif model_type == "amd_scalper":
-        prefix = "amd_scalper_"
-    else:
-        prefix = "wavetrader_mtf_"
+    prefix = "wavetrader_mtf_"
     ckpt_dirs = sorted(
         [d for d in checkpoint_dir.iterdir()
          if d.is_dir() and d.name.startswith(prefix)],
@@ -763,18 +971,8 @@ def _load_latest_model(checkpoint_dir: Path, config: Any,
             matches = list(ckpt_dir.glob(pattern))
             if matches:
                 try:
-                    if model_type == "wavefollower":
-                        from wavetrader.wave_follower import WaveFollower, WaveFollowerConfig
-                        model = WaveFollower(config)
-                    elif model_type == "meanrev":
-                        from wavetrader.mean_reversion import MeanReversion
-                        model = MeanReversion(config)
-                    elif model_type == "amd_scalper":
-                        from wavetrader.amd_scalper import AMDScalper
-                        model = AMDScalper(config)
-                    else:
-                        from wavetrader.model import WaveTraderMTF
-                        model = WaveTraderMTF(config)
+                    from wavetrader.model import WaveTraderMTF
+                    model = WaveTraderMTF(config)
                     state = torch.load(matches[0], map_location="cpu", weights_only=False)
                     if "model_state_dict" in state:
                         raw_sd = state["model_state_dict"]

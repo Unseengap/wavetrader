@@ -214,13 +214,14 @@ class LiveService:
             "model_loaded": self._model is not None,
         }
 
-    def start(self, pair: str = "GBP/JPY", timeframe: str = "15min") -> dict:
+    def start(self, pair: str = "GBP/JPY", timeframe: str = "15min", strategy: str = "") -> dict:
         """Start the live streaming loop in a background thread."""
         if self.is_running:
             return {"status": "already_running", "pair": self._pair}
 
         self._pair = pair
         self._timeframe = timeframe
+        self._strategy = strategy
         self._running = True
         self._status = "starting"
         self._error_msg = ""
@@ -1193,16 +1194,11 @@ class LiveService:
     # ── Model loading ─────────────────────────────────────────────────────
 
     def _load_model(self) -> None:
-        """Try to load the latest model checkpoint (type-aware via registry)."""
+        """Try to load the latest WaveTrader MTF model checkpoint."""
         try:
             import torch
 
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            # Determine model type from registry
-            model_type = "mtf"
-            if self._model_entry:
-                model_type = getattr(self._model_entry, "model_type", "mtf")
 
             # Search for latest checkpoint
             ckpt_dirs = [
@@ -1218,15 +1214,7 @@ class LiveService:
             for ckpt_dir in ckpt_dirs:
                 if not ckpt_dir.is_dir():
                     continue
-                # Filter checkpoint subdirs by model type prefix
-                if model_type == "wavefollower":
-                    prefix = "wavefollower_"
-                elif model_type == "meanrev":
-                    prefix = "mean_reversion_"
-                elif model_type == "amd_scalper":
-                    prefix = "amd_scalper_"
-                else:
-                    prefix = "wavetrader_mtf_"
+                prefix = "wavetrader_mtf_"
                 subdirs = sorted(
                     (d for d in ckpt_dir.iterdir()
                      if d.is_dir() and d.name.startswith(prefix)),
@@ -1241,25 +1229,10 @@ class LiveService:
                 for d in subdirs:
                     weights = d / "model_weights.pt"
                     if weights.exists():
-                        if model_type == "wavefollower":
-                            from wavetrader.wave_follower import WaveFollower, WaveFollowerConfig
-                            self._model_config = WaveFollowerConfig(pair=self._pair)
-                            self._model = WaveFollower(self._model_config)
-                        elif model_type == "meanrev":
-                            from wavetrader.mean_reversion import MeanReversion
-                            from wavetrader.config import MeanRevConfig
-                            self._model_config = MeanRevConfig(pair=self._pair)
-                            self._model = MeanReversion(self._model_config)
-                        elif model_type == "amd_scalper":
-                            from wavetrader.amd_scalper import AMDScalper
-                            from wavetrader.config import AMDScalperConfig
-                            self._model_config = AMDScalperConfig(pair=self._pair)
-                            self._model = AMDScalper(self._model_config)
-                        else:
-                            from wavetrader.config import MTFConfig
-                            from wavetrader.model import WaveTraderMTF
-                            self._model_config = MTFConfig(pair=self._pair)
-                            self._model = WaveTraderMTF(self._model_config)
+                        from wavetrader.config import MTFConfig
+                        from wavetrader.model import WaveTraderMTF
+                        self._model_config = MTFConfig(pair=self._pair)
+                        self._model = WaveTraderMTF(self._model_config)
 
                         state = torch.load(
                             str(weights), weights_only=False, map_location=self._device
@@ -1275,7 +1248,7 @@ class LiveService:
                         self._model.to(self._device)
                         self._model.eval()
                         loaded = True
-                        logger.info("Loaded %s model from %s", model_type, weights)
+                        logger.info("Loaded WaveTrader MTF model from %s", weights)
                         break
                 if loaded:
                     break
@@ -1388,10 +1361,11 @@ class LiveService:
     _PIP_SIZE_MAP = {"GBP/JPY": 0.01, "EUR/JPY": 0.01, "USD/JPY": 0.01, "GBP/USD": 0.0001}
 
     def _update_trailing_stops(self, bid: float, ask: float) -> None:
-        """Check and update trailing stop losses for all open positions."""
-        pip = self._PIP_SIZE_MAP.get(self._pair, 0.01)
-        min_trail = self._MIN_TRAIL_PIPS.get(self._pair, 5.0) * pip
+        """Check and update trailing stop losses for all open positions.
 
+        Trailing only activates after price moves >= 1R in our favor.
+        Floor = 50% of initial risk (scales with trade size).
+        """
         for account in ("demo", "live"):
             if account == "demo":
                 trade_id = self._demo_trade_id
@@ -1422,6 +1396,7 @@ class LiveService:
                 continue
 
             trail_dist = initial_risk * (1.0 - trailing_pct)
+            min_trail = initial_risk * 0.5
             trail_dist = max(trail_dist, min_trail)
 
             new_sl = current_sl
@@ -1433,6 +1408,10 @@ class LiveService:
                     else:
                         self._live_trade_highest = current_high
                     highest = current_high
+                # Only trail after 1R in our favor
+                unrealised_r = (highest - entry) / initial_risk
+                if unrealised_r < 1.0:
+                    continue
                 candidate_sl = highest - trail_dist
                 if candidate_sl > current_sl:
                     new_sl = round(candidate_sl, 3 if "JPY" in self._pair else 5)
@@ -1444,6 +1423,10 @@ class LiveService:
                     else:
                         self._live_trade_lowest = current_low
                     lowest = current_low
+                # Only trail after 1R in our favor
+                unrealised_r = (entry - lowest) / initial_risk
+                if unrealised_r < 1.0:
+                    continue
                 candidate_sl = lowest + trail_dist
                 if candidate_sl < current_sl:
                     new_sl = round(candidate_sl, 3 if "JPY" in self._pair else 5)

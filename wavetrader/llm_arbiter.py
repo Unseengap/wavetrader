@@ -92,6 +92,15 @@ class ArbiterContext:
     # Session info
     current_session: str = ""       # Tokyo / London / New York / Off-hours
 
+    # Strategy context (new — strategy-led architecture)
+    strategy_id: str = ""           # "amd_session", "ict_smc", etc.
+    strategy_name: str = ""         # "AMD Session Scalper"
+    strategy_author: str = ""       # "Dectrick McGee"
+    strategy_reason: str = ""       # Human-readable from StrategySetup.reason
+    strategy_context: Dict[str, Any] = field(default_factory=dict)  # Extra strategy data
+    ai_confidence: float = 0.0      # AI confirmer confidence
+    ai_alignment: float = 0.0       # Multi-TF alignment score
+
 
 @dataclass
 class ArbiterDecision:
@@ -104,6 +113,8 @@ class ArbiterDecision:
     modified_sl_pips: Optional[float] = None
     modified_tp_pips: Optional[float] = None
     risk_notes: str = ""            # calendar/portfolio risk warnings
+    narrative: str = ""             # strategy voice narration for dashboard display
+    strategy_meta: Optional[Dict[str, Any]] = None  # strategy name, author, version
     model_used: str = ""            # which Gemini model was used
     latency_ms: float = 0.0
     timestamp: str = ""
@@ -227,23 +238,33 @@ class LLMArbiter:
 
     def _system_instruction(self) -> str:
         return (
-            "You are a forex trade signal arbiter for an automated trading platform. "
-            "You receive signals from AI models and must decide whether to APPROVE, VETO, or OVERRIDE them.\n\n"
+            "You are the voice of the WaveTrader strategy engine — a forex trade signal analyst "
+            "for an automated trading platform.\n\n"
+            "Trading strategies (rule-based, by Dectrick McGee) detect setups. An AI model "
+            "(WaveTrader MTF) confirms direction. You receive the confirmed signal plus rich "
+            "context and must:\n\n"
+            "1. **NARRATE** — Explain what the strategy detected in plain English.\n"
+            "   Example: 'AMD Session Scalper detected a London sweep of the Asian low on GBP/JPY 5m. "
+            "Price has returned to the demand zone at 191.45 with a bullish engulfing candle.'\n\n"
+            "2. **DECIDE** — APPROVE, VETO, or OVERRIDE the signal.\n\n"
+            "3. **WARN** — Flag calendar events, drawdown, or session risks.\n\n"
             "RULES:\n"
-            "1. APPROVE — the signal looks valid given market context. No changes needed.\n"
+            "1. APPROVE — the strategy setup looks valid given market context. No changes needed.\n"
             "2. VETO — block the trade. Reasons: upcoming high-impact news, overextended drawdown, "
             "   conflicting higher-timeframe trend, choppy/ranging market, or concentrated risk.\n"
-            "3. OVERRIDE — modify the signal. Only when you have HIGH confidence the adjustment is better. "
-            "   You can: flip direction, adjust SL/TP, or adjust confidence.\n\n"
+            "3. OVERRIDE — modify the signal. Only when you have HIGH confidence the adjustment is better.\n\n"
             "GUIDELINES:\n"
             "- Be conservative with VETO and OVERRIDE. When in doubt, APPROVE.\n"
             "- ALWAYS veto within 30 minutes of high-impact news events for the relevant currencies.\n"
-            "- Consider the model's confidence and alignment scores — high alignment means multiple "
+            "- Consider the AI model's confidence and alignment scores — high alignment means multiple "
             "  timeframes agree.\n"
+            "- The strategy provides structural SL/TP (zones, levels). Respect these unless clearly wrong.\n"
             "- Check trade history: if recent trades are mostly losses, be more cautious.\n"
             "- Consider session: signals during off-hours (Sydney session) with wide spreads deserve scrutiny.\n\n"
             "Respond ONLY with valid JSON matching this schema:\n"
-            '{"action": "APPROVE"|"VETO"|"OVERRIDE", "reasoning": "string (2-4 sentences)", '
+            '{"action": "APPROVE"|"VETO"|"OVERRIDE", '
+            '"narrative": "string (2-4 sentences narrating what the strategy detected and why)", '
+            '"reasoning": "string (2-4 sentences on your decision)", '
             '"confidence_adjustment": float (-0.3 to 0.3), '
             '"modified_signal": null|"BUY"|"SELL"|"HOLD", '
             '"modified_sl_pips": null|float, "modified_tp_pips": null|float, '
@@ -254,13 +275,32 @@ class LLMArbiter:
         """Build the evaluation prompt from context."""
         lines = [
             f"## Signal to Evaluate",
+        ]
+
+        # Strategy context (new)
+        if ctx.strategy_id:
+            lines.extend([
+                f"Strategy: **{ctx.strategy_name}** ({ctx.strategy_id}) by {ctx.strategy_author}",
+                f"Strategy Reason: {ctx.strategy_reason}",
+            ])
+            if ctx.strategy_context:
+                lines.append(f"Strategy Data: {json.dumps(ctx.strategy_context, default=str)}")
+            lines.append("")
+
+        lines.extend([
             f"Model: {ctx.model_id} | Pair: {ctx.pair} | Timeframe: {ctx.timeframe}",
             f"Signal: **{ctx.signal}** | Confidence: {ctx.confidence:.4f} | Alignment: {ctx.alignment:.4f}",
+        ])
+
+        if ctx.ai_confidence > 0:
+            lines.append(f"AI Confirmer Confidence: {ctx.ai_confidence:.4f} | AI Alignment: {ctx.ai_alignment:.4f}")
+
+        lines.extend([
             f"Entry: {ctx.entry_price:.5f} | SL: {ctx.sl_pips:.1f} pips | TP: {ctx.tp_pips:.1f} pips",
             "",
             f"## Market Context",
             f"Session: {ctx.current_session}",
-        ]
+        ])
 
         # Recent bars (compact table)
         if ctx.recent_bars:
@@ -390,6 +430,7 @@ class LLMArbiter:
 
         decision.reasoning = data.get("reasoning", "No reasoning provided")
         decision.risk_notes = data.get("risk_notes", "")
+        decision.narrative = data.get("narrative", "")
 
         # Confidence adjustment (clamp to safe range)
         adj = data.get("confidence_adjustment", 0.0)

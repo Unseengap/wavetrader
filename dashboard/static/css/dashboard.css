@@ -1971,3 +1971,84 @@ body {
 .wt-arbiter-outcome {
     padding: 8px 0;
 }
+
+
+/* ─── Strategy Parameters (config panel) ────────────────────────────────── */
+
+.wt-strategy-meta-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--wt-border);
+    margin-bottom: 8px;
+}
+
+.wt-field-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wt-field-checkbox label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 0.78rem;
+}
+
+.wt-field-checkbox input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--wt-accent, #58a6ff);
+}
+
+
+/* ─── Strategy Badge (shared: signal log, arbiter rows, config panel) ──── */
+
+.wt-strategy-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-size: 0.66rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    background: rgba(136, 132, 216, 0.15);
+    color: #b8b4f0;
+    white-space: nowrap;
+}
+
+
+/* ─── Signal Log Entry (enhanced with strategy info) ─────────────────────── */
+
+.wt-signal-log-entry {
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1px solid var(--wt-border);
+    font-size: 0.78rem;
+}
+
+.wt-signal-reason {
+    margin-top: 3px;
+    font-size: 0.7rem;
+    color: var(--wt-text);
+    opacity: 0.75;
+    line-height: 1.4;
+    font-style: italic;
+}
+
+
+/* ─── Narrative Text (arbiter decision rows + detail modal) ──────────────── */
+
+.wt-narrative-text {
+    padding: 4px 8px 4px 10px;
+    margin-top: 4px;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--wt-text);
+    opacity: 0.85;
+    border-left: 2px solid rgba(136, 132, 216, 0.4);
+    background: rgba(136, 132, 216, 0.04);
+    border-radius: 0 4px 4px 0;
+}
