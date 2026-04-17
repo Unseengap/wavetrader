@@ -94,14 +94,14 @@ class PriceActionReversalStrategy(BaseStrategy):
     def default_params(self) -> Dict[str, Any]:
         return {
             # ── Swing detection ──────────────────────────────────────
-            "swing_lookback": 7,             # Bars left/right for pivot detection (7 = major swings only)
+            "swing_lookback": 5,             # Bars left/right for pivot detection (5 = more zones, more entries)
             "zone_tolerance_pct": 0.002,     # 0.2% — price within this = "at zone"
             "max_zones": 15,                 # Keep this many recent zones
             "min_zone_age": 5,               # Zone must be at least 5 bars old (20h on 4H)
             "min_zone_tests": 0,             # Zone must have been tested N times before
             # ── Confirmation ─────────────────────────────────────────
             "require_confirmation": True,
-            "confirm_body_atr_min": 0.40,    # Confirm bar body >= 0.40 × ATR (strong confirmation)
+            "confirm_body_atr_min": 0.30,    # Confirm bar body >= 0.30 × ATR (looser = more trades compound)
             # ── Entry types (all on by default) ──────────────────────
             "enable_support_bounce": True,
             "enable_resistance_reject": True,
@@ -110,14 +110,21 @@ class PriceActionReversalStrategy(BaseStrategy):
             # ── Trend ────────────────────────────────────────────────
             "trend_bias_threshold": 0.15,    # |bias| > this = trending
             "require_trend_alignment": True, # Support bounce only in uptrend, resist reject only in downtrend
-            "min_trend_candles_reversal": 5, # For reversal entries only
+            "min_trend_candles_reversal": 3, # For reversal entries — catches reversals earlier
+            # ── HTF filters ──────────────────────────────────────────
+            "use_daily_ema_filter": False,   # OFF — 3R-70% needs max trade count; filters cut winners
+            "use_rsi_filter": False,         # OFF — same reason
+            "rsi_upper": 70.0,               # Skip SELL if RSI > this (when filter ON)
+            "rsi_lower": 30.0,               # Skip BUY if RSI < this (when filter ON)
+            "use_adx_filter": False,         # OFF — ADX filter reduces trades too aggressively
+            "min_adx": 15.0,                 # Minimum ADX for entry (when filter ON)
             # ── Rejection quality ────────────────────────────────────
-            "min_wick_atr_ratio": 0.7,       # Rejection wick >= 0.7 × ATR (strong rejection)
+            "min_wick_atr_ratio": 0.5,       # Rejection wick >= 0.5 × ATR (looser = more retest entries)
             # ── Risk management ──────────────────────────────────────
             "trailing_stop_pct": 0.3,
             "sl_buffer_pips": 5.0,           # Buffer beyond zone for SL
             "min_sl_pips": 10.0,
-            "max_sl_pips": 200.0,
+            "max_sl_pips": 80.0,             # Capped at 80 pips — kills oversized SLs, boosts WR
             "exit_mode": "multi_tp_trail",   # "geometric_trail" or "multi_tp_trail"
             # ── General ──────────────────────────────────────────────
             "min_confidence": 0.50,
@@ -280,6 +287,36 @@ class PriceActionReversalStrategy(BaseStrategy):
         tolerance = p["zone_tolerance_pct"]
         min_age = p["min_zone_age"]
 
+        # ── Daily EMA filter: only trade with the daily trend ────────────
+        daily_bullish = None  # None = no filter / no data
+        if p["use_daily_ema_filter"]:
+            ema20_1d = indicators.ema_20.get("1d", np.array([]))
+            ema50_1d = indicators.ema_50.get("1d", np.array([]))
+            if len(ema20_1d) > 0 and len(ema50_1d) > 0:
+                # Map 4H bar index to approximate 1D index
+                ix_1d = min(i // 6, len(ema20_1d) - 1)
+                e20 = ema20_1d[ix_1d]
+                e50 = ema50_1d[ix_1d]
+                if not (np.isnan(e20) or np.isnan(e50)):
+                    daily_bullish = e20 > e50
+
+        # ── RSI filter ───────────────────────────────────────────────────
+        rsi_val = None
+        if p["use_rsi_filter"]:
+            rsi_arr = indicators.rsi.get(etf, np.array([]))
+            if i < len(rsi_arr):
+                rsi_val = rsi_arr[i]
+                if np.isnan(rsi_val):
+                    rsi_val = None
+
+        # ── ADX filter ───────────────────────────────────────────────────
+        if p["use_adx_filter"]:
+            adx_arr = indicators.adx.get(etf, np.array([]))
+            if i < len(adx_arr):
+                adx_val = adx_arr[i]
+                if not np.isnan(adx_val) and adx_val < p["min_adx"]:
+                    return None  # Market too choppy
+
         # ══════════════════════════════════════════════════════════════════
         # PHASE 1: Check pending confirmation
         # ══════════════════════════════════════════════════════════════════
@@ -304,9 +341,25 @@ class PriceActionReversalStrategy(BaseStrategy):
         # PHASE 2: Scan for new entry signals
         # ══════════════════════════════════════════════════════════════════
 
+        # Helper: check if direction passes HTF filters
+        def _direction_ok(direction: Signal) -> bool:
+            # Daily EMA filter
+            if daily_bullish is not None:
+                if direction == Signal.BUY and not daily_bullish:
+                    return False
+                if direction == Signal.SELL and daily_bullish:
+                    return False
+            # RSI filter
+            if rsi_val is not None:
+                if direction == Signal.BUY and rsi_val < p["rsi_lower"]:
+                    return False  # Oversold — reversal BUY ok, but momentum still down
+                if direction == Signal.SELL and rsi_val > p["rsi_upper"]:
+                    return False  # Overbought — reversal SELL ok, but momentum still up
+            return True
+
         # ── Type 1: Support Bounce (BUY in uptrend) ──────────────────────
         trend_required = p["require_trend_alignment"]
-        if p["enable_support_bounce"] and (is_uptrend or not trend_required):
+        if p["enable_support_bounce"] and (is_uptrend or not trend_required) and _direction_ok(Signal.BUY):
             zone = self._find_nearby_zone(low, self._swing_lows, tolerance, min_age, i)
             if zone is not None and zone.tested >= p["min_zone_tests"]:
                 # Check rejection: wick below zone but close above
@@ -331,7 +384,7 @@ class PriceActionReversalStrategy(BaseStrategy):
                     return self._build_setup(pending, close, pip_size, atr_pips)
 
         # ── Type 2: Resistance Rejection (SELL in downtrend) ─────────────
-        if p["enable_resistance_reject"] and (is_downtrend or not trend_required):
+        if p["enable_resistance_reject"] and (is_downtrend or not trend_required) and _direction_ok(Signal.SELL):
             zone = self._find_nearby_zone(high, self._swing_highs, tolerance, min_age, i)
             if zone is not None and zone.tested >= p["min_zone_tests"]:
                 wick_above = high - zone.price
@@ -357,7 +410,8 @@ class PriceActionReversalStrategy(BaseStrategy):
         # ── Type 3: Break & Retest ──────────────────────────────────────
         if p["enable_break_retest"]:
             # BUY: price previously broke above a swing high, now retesting it as support
-            for sh in reversed(self._swing_highs[-10:]):
+            if _direction_ok(Signal.BUY):
+              for sh in reversed(self._swing_highs[-10:]):
                 if i - sh.idx < 5:
                     continue  # Too recent
                 # Was it broken? Check if any bar closed above it after the swing
@@ -385,7 +439,8 @@ class PriceActionReversalStrategy(BaseStrategy):
                         break  # Only check the most recent broken level
 
             # SELL: price broke below a swing low, now retesting it as resistance
-            for sl_pt in reversed(self._swing_lows[-10:]):
+            if _direction_ok(Signal.SELL):
+              for sl_pt in reversed(self._swing_lows[-10:]):
                 if i - sl_pt.idx < 5:
                     continue
                 if self._check_level_broken(df, i, sl_pt.price, "below"):
@@ -434,7 +489,7 @@ class PriceActionReversalStrategy(BaseStrategy):
             body = abs(close - open_)
             candle_range = high - low
             if candle_range > 0 and body / candle_range >= 0.30:
-                if down_count >= min_tc and close > prev_close:
+                if down_count >= min_tc and close > prev_close and _direction_ok(Signal.BUY):
                     conf = 0.45 + min(down_count - min_tc, 3) * 0.05
                     sl_level = trend_low - p["sl_buffer_pips"] * pip_size
                     pending = _PendingEntry(
@@ -448,7 +503,7 @@ class PriceActionReversalStrategy(BaseStrategy):
                         return None
                     return self._build_setup(pending, close, pip_size, atr_pips)
 
-                elif up_count >= min_tc and close < prev_close:
+                elif up_count >= min_tc and close < prev_close and _direction_ok(Signal.SELL):
                     conf = 0.45 + min(up_count - min_tc, 3) * 0.05
                     sl_level = trend_high + p["sl_buffer_pips"] * pip_size
                     pending = _PendingEntry(

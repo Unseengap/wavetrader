@@ -4,7 +4,7 @@ Shared enums and dataclasses for WaveTrader.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class Signal(Enum):
@@ -33,6 +33,8 @@ class TradeSignal:
     timestamp: datetime
     exit_mode: str = "tp_sl"  # "tp_sl" (v1/v2) or "opposite_signal" (v3)
     trend: int = 2            # 0=UP, 1=DOWN, 2=NEUTRAL from trend_logits
+    context: Dict[str, Any] = field(default_factory=dict)
+    tp_levels: List[Tuple[float, float]] = field(default_factory=list)  # [(pips, fraction), ...]
 
 @dataclass
 class Trade:
@@ -55,11 +57,15 @@ class Trade:
     original_size: float = 0.0   # Original lot size before partial closes
     partial_pnl: float = 0.0     # Accumulated PnL from partial closes
 
+    # Multi-TP levels: [(price, fraction), ...] — consumed on partial close
+    tp_levels: List[Tuple[float, float]] = field(default_factory=list)
+
     # Filled on close
     exit_time:   Optional[datetime] = None
     exit_price:  Optional[float]    = None
     pnl:         float = 0.0
     exit_reason: str   = ""
+    context: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.current_sl    = self.stop_loss

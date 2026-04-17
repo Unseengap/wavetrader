@@ -48,6 +48,11 @@ def run_strategy_backtest(
         BacktestResults with trades, equity curve, and aggregate stats.
     """
     bt_config = bt_config or BacktestConfig()
+    # Auto-detect pip_size from pair if caller didn't override
+    if bt_config.pip_size == 0.01 and "USD" in pair.split("/")[-1]:
+        bt_config.pip_size = 0.0001
+    elif bt_config.pip_size == 0.0001 and "JPY" in pair:
+        bt_config.pip_size = 0.01
     engine = BacktestEngine(bt_config)
     entry_tf = strategy.meta.entry_timeframe
 
@@ -150,6 +155,8 @@ def run_strategy_backtest(
                         trailing_stop_pct=setup.trailing_stop_pct,
                         timestamp=timestamp,
                         exit_mode=getattr(setup, 'exit_mode', 'tp_sl'),
+                        context=getattr(setup, 'context', {}),
+                        tp_levels=getattr(setup, 'tp_levels', []),
                     )
 
                 # 5. Open position via engine

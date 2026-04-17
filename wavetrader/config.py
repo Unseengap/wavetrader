@@ -92,27 +92,29 @@ class MTFConfig:
 
 @dataclass
 class BacktestConfig:
-    """Configuration for the backtesting engine."""
+    """Configuration for the backtesting engine — OANDA US defaults."""
     initial_balance: float = 10_000.0   # USD
     risk_per_trade: float = 0.02        # 2 % of balance per trade
-    leverage: float = 30.0              # 30:1 standard retail forex
-    spread_pips: float = 2.0            # GBP/JPY typical spread
-    commission_per_lot: float = 7.0     # USD per standard lot round-trip
-    pip_value: float = 6.5              # USD per pip per std lot (GBP/JPY approx)
+    leverage: float = 20.0              # OANDA US: 20:1 for crosses (GBP/JPY, EUR/JPY)
+    spread_pips: float = 4.2            # OANDA avg spread GBP/JPY (live, from spreads page)
+    commission_per_lot: float = 0.0     # OANDA standard account: zero commission (spread only)
+    pip_value: float = 6.50             # USD per pip per std lot (GBP/JPY ≈ 1000 JPY / ~154 USDJPY)
+    pip_size: float = 0.01              # 0.01 for JPY pairs, 0.0001 for USD pairs
     min_confidence: float = 0.60        # Skip signals below this confidence
     cooldown_bars: int = 2              # Minimum bars between new trades (avoids churn)
+    margin_use_limit: float = 0.90      # Max fraction of balance usable as margin (OANDA closeout at 50% of margin used)
 
     # Circuit breakers
     atr_halt_multiplier: float = 3.0    # Halt if current range > multiplier × 20-bar mean
-    drawdown_reduce_threshold: float = 0.05  # Halve risk when drawdown exceeds this fraction
+    drawdown_reduce_threshold: float = 0.15  # Halve risk when drawdown exceeds 15%
 
     # Trailing stop activation
     trail_activate_r: float = 3.0       # Start trailing after price moves N×R in favor
 
     # Multi-TP levels: list of (R_target, portion_to_close)
     # Remaining portion after all TPs rides the trailing stop.
-    # Default: heavy front-load at 1R, scale out, 10% runner rides
-    multi_tp_levels: tuple = ((1.0, 0.50), (2.0, 0.25), (3.0, 0.15))
+    # Default: cash 70% at 3R, 30% runner trails — best R:R on OANDA $100
+    multi_tp_levels: tuple = ((3.0, 0.70),)
 
 
 @dataclass

@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -96,6 +96,7 @@ class StrategySetup:
     exit_mode: str = "tp_sl"          # "tp_sl" | "geometric_trail"
     timestamp: Optional[datetime] = None
     context: Dict[str, Any] = field(default_factory=dict)  # Extra data for LLM narrative
+    tp_levels: List[Tuple[float, float]] = field(default_factory=list)  # [(pips, fraction), ...]
 
     def __post_init__(self):
         if self.direction == Signal.HOLD:

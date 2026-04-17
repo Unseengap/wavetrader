@@ -99,6 +99,34 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  strategy-harmonic-scanner:
+    build: .
+    image: wavetrader:latest
+    container_name: strategy-harmonic-scanner
+    restart: unless-stopped
+    volumes:
+      - ./data:/data:rw
+      - ./checkpoints:/checkpoints:ro
+      - ./logs:/app/logs:rw
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_ID=harmonic_scanner
+      - AI_CHECKPOINT_PATH=/checkpoints
+      - PAIR=GBP/JPY
+      - OANDA_API_KEY=${HS_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - OANDA_ACCOUNT_ID=${HS_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - OANDA_ENVIRONMENT=practice
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - LLM_ARBITER_ENABLED=${LLM_ARBITER_ENABLED:-true}
+    depends_on:
+      - redis
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   redis:
     image: redis:7-alpine
     container_name: wavetrader-redis
@@ -155,6 +183,8 @@ services:
       - SB_OANDA_DEMO_ACCOUNT_ID=${SB_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
       - PAR_OANDA_DEMO_API_KEY=${PAR_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
       - PAR_OANDA_DEMO_ACCOUNT_ID=${PAR_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
+      - HS_OANDA_DEMO_API_KEY=${HS_OANDA_DEMO_API_KEY:-${OANDA_DEMO_API_KEY}}
+      - HS_OANDA_DEMO_ACCOUNT_ID=${HS_OANDA_DEMO_ACCOUNT_ID:-${OANDA_DEMO_ACCOUNT_ID}}
       # Legacy model OANDA accounts (backwards compat)
       - WF_OANDA_DEMO_API_KEY=${WF_OANDA_DEMO_API_KEY:-}
       - WF_OANDA_DEMO_ACCOUNT_ID=${WF_OANDA_DEMO_ACCOUNT_ID:-}

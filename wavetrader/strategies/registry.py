@@ -82,6 +82,8 @@ _BUILTIN_STRATEGIES: Dict[str, str] = {
     "news_catalyst_ob": "wavetrader.strategies.news_catalyst_ob.NewsCatalystOBStrategy",
     "opening_break_retest": "wavetrader.strategies.opening_break_retest.OpeningBreakRetestStrategy",
     "price_action_reversal": "wavetrader.strategies.price_action_reversal.PriceActionReversalStrategy",
+    "harmonic_scanner": "wavetrader.strategies.harmonic_scanner.HarmonicScannerStrategy",
+    "fib_scalper": "wavetrader.strategies.fib_scalper.FibScalperStrategy",
 }
 
 

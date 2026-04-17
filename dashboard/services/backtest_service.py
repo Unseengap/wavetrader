@@ -107,6 +107,7 @@ def _trade_to_dict(t: Any) -> Dict[str, Any]:
         "exit_price": round(float(t.exit_price), 5) if t.exit_price else None,
         "pnl": round(float(t.pnl), 2),
         "exit_reason": t.exit_reason,
+        "context": getattr(t, 'context', {}),
     }
 
 
