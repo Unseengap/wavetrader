@@ -109,6 +109,11 @@ class BacktestConfig:
     # Trailing stop activation
     trail_activate_r: float = 3.0       # Start trailing after price moves N×R in favor
 
+    # Multi-TP levels: list of (R_target, portion_to_close)
+    # Remaining portion after all TPs rides the trailing stop.
+    # Default: heavy front-load at 1R, scale out, 10% runner rides
+    multi_tp_levels: tuple = ((1.0, 0.50), (2.0, 0.25), (3.0, 0.15))
+
 
 @dataclass
 class ResonanceConfig:

@@ -51,6 +51,9 @@ class Trade:
     highest_price: float = 0.0   # Peak price for long trailing
     lowest_price:  float = 0.0   # Trough price for short trailing
     trail_lock_pnl: float = 0.0  # Geometric trail: current locked PnL floor
+    partial_closes: int = 0      # How many partial TPs have been taken
+    original_size: float = 0.0   # Original lot size before partial closes
+    partial_pnl: float = 0.0     # Accumulated PnL from partial closes
 
     # Filled on close
     exit_time:   Optional[datetime] = None
@@ -62,6 +65,7 @@ class Trade:
         self.current_sl    = self.stop_loss
         self.highest_price = self.entry_price
         self.lowest_price  = self.entry_price
+        self.original_size = self.size
 
 
 @dataclass

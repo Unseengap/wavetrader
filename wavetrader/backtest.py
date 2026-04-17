@@ -162,9 +162,13 @@ class BacktestEngine:
 
         is_opposite_exit = getattr(t, 'exit_mode', 'tp_sl') == 'opposite_signal'
         is_geometric = getattr(t, 'exit_mode', 'tp_sl') == 'geometric_trail'
+        is_multi_tp = getattr(t, 'exit_mode', 'tp_sl') == 'multi_tp_trail'
 
         if is_geometric:
             return self._update_geometric_trail(t, current_high, current_low, current_close, timestamp)
+
+        if is_multi_tp:
+            return self._update_multi_tp_trail(t, current_high, current_low, current_close, timestamp)
 
         if t.direction == Signal.BUY:
             if current_high > t.highest_price:
@@ -307,12 +311,195 @@ class BacktestEngine:
         self._update_equity(current_close)
         return None
 
+    # ── Multi-TP Geometric Trail ──────────────────────────────────────────
+
+    def _update_multi_tp_trail(
+        self,
+        t: Trade,
+        current_high: float,
+        current_low: float,
+        current_close: float,
+        timestamp: datetime,
+    ) -> Optional[Trade]:
+        """
+        Multi-TP with trailing runner:
+          - TP1 at 1R: close 25%, move SL to break-even
+          - TP2 at 2R: close 25%, SL locks at 1R
+          - TP3 at 3R: close 25%, SL locks at 2R
+          - Remaining 25%: rides geometric trailing stop
+        """
+        pip = 0.01  # JPY pairs
+        pip_value = self.config.pip_value
+
+        if t.direction == Signal.BUY:
+            initial_risk_price = t.entry_price - t.stop_loss
+            t.highest_price = max(t.highest_price, current_high)
+
+            risk_pips = initial_risk_price / pip
+            one_r = risk_pips * pip_value * t.original_size  # Based on original size
+
+            # Current unrealized R at peak
+            peak_pips = (t.highest_price - t.entry_price) / pip
+            peak_r = (peak_pips * pip_value * t.original_size) / one_r if one_r > 0 else 0
+
+            # Check partial TPs
+            tp_levels = self.config.multi_tp_levels
+            while t.partial_closes < len(tp_levels) and one_r > 0:
+                target_r, portion = tp_levels[t.partial_closes]
+                tp_price = t.entry_price + target_r * initial_risk_price
+                if current_high >= tp_price:
+                    # Partial close: bank portion of the position
+                    close_size = t.original_size * portion
+                    close_pips = (tp_price - t.entry_price) / pip
+                    close_pnl = close_pips * pip_value * close_size
+                    t.partial_pnl += close_pnl
+                    t.size = round(t.size - close_size, 4)
+                    self.balance += close_pnl
+                    t.partial_closes += 1
+
+                    # Move SL up: lock at (target_r - 1)R or break-even
+                    lock_r = max(target_r - 1.0, 0.0)
+                    new_sl = t.entry_price + lock_r * initial_risk_price
+                    if new_sl > t.current_sl:
+                        t.current_sl = new_sl
+                else:
+                    break
+
+            # Runner portion: trail with geometric logic if we've taken all partial TPs
+            if t.partial_closes >= len(tp_levels) and t.size > 0.005:
+                trail_pct = t.trailing_stop_pct if t.trailing_stop_pct > 0 else 0.5
+                trail_distance = initial_risk_price * trail_pct
+
+                # Trail from peak
+                trail_sl = t.highest_price - trail_distance
+
+                # R-step floor for runner
+                runner_peak_pips = (t.highest_price - t.entry_price) / pip
+                runner_peak_pnl = runner_peak_pips * pip_value * t.original_size
+                if one_r > 0:
+                    r_multiple = runner_peak_pnl / one_r
+                    floor_r = max(int(r_multiple), len(tp_levels))  # At least last TP level
+                    floor_pnl = floor_r * one_r
+                    t.trail_lock_pnl = max(t.trail_lock_pnl, floor_pnl)
+
+                    floor_pips = t.trail_lock_pnl / max(pip_value * t.original_size, 1e-9)
+                    floor_sl = t.entry_price + floor_pips * pip
+                    trail_sl = max(trail_sl, floor_sl)
+
+                if trail_sl > t.current_sl:
+                    t.current_sl = trail_sl
+
+            # Exit check
+            if current_low <= t.current_sl:
+                reason = "Trailing Stop" if t.current_sl > t.stop_loss else "Stop Loss"
+                # Add partial PnL to final close
+                remaining_pips = (t.current_sl - t.entry_price) / pip
+                remaining_pnl = remaining_pips * pip_value * t.size
+                t.size = t.original_size  # Restore for PnL calc
+                return self._close_multi_tp(t, t.current_sl, timestamp, reason)
+
+        else:  # SELL
+            initial_risk_price = t.stop_loss - t.entry_price
+            t.lowest_price = min(t.lowest_price, current_low)
+
+            risk_pips = initial_risk_price / pip
+            one_r = risk_pips * pip_value * t.original_size
+
+            tp_levels = self.config.multi_tp_levels
+            while t.partial_closes < len(tp_levels) and one_r > 0:
+                target_r, portion = tp_levels[t.partial_closes]
+                tp_price = t.entry_price - target_r * initial_risk_price
+                if current_low <= tp_price:
+                    close_size = t.original_size * portion
+                    close_pips = (t.entry_price - tp_price) / pip
+                    close_pnl = close_pips * pip_value * close_size
+                    t.partial_pnl += close_pnl
+                    t.size = round(t.size - close_size, 4)
+                    self.balance += close_pnl
+                    t.partial_closes += 1
+
+                    lock_r = max(target_r - 1.0, 0.0)
+                    new_sl = t.entry_price - lock_r * initial_risk_price
+                    if new_sl < t.current_sl:
+                        t.current_sl = new_sl
+                else:
+                    break
+
+            # Runner trail
+            if t.partial_closes >= len(tp_levels) and t.size > 0.005:
+                trail_pct = t.trailing_stop_pct if t.trailing_stop_pct > 0 else 0.5
+                trail_distance = initial_risk_price * trail_pct
+                trail_sl = t.lowest_price + trail_distance
+
+                runner_trough_pips = (t.entry_price - t.lowest_price) / pip
+                runner_trough_pnl = runner_trough_pips * pip_value * t.original_size
+                if one_r > 0:
+                    r_multiple = runner_trough_pnl / one_r
+                    floor_r = max(int(r_multiple), len(tp_levels))
+                    floor_pnl = floor_r * one_r
+                    t.trail_lock_pnl = max(t.trail_lock_pnl, floor_pnl)
+
+                    floor_pips = t.trail_lock_pnl / max(pip_value * t.original_size, 1e-9)
+                    floor_sl = t.entry_price - floor_pips * pip
+                    trail_sl = min(trail_sl, floor_sl)
+
+                if trail_sl < t.current_sl:
+                    t.current_sl = trail_sl
+
+            # Exit check
+            if current_high >= t.current_sl:
+                reason = "Trailing Stop" if t.current_sl < t.stop_loss else "Stop Loss"
+                t.size = t.original_size
+                return self._close_multi_tp(t, t.current_sl, timestamp, reason)
+
+        self._update_equity(current_close)
+        return None
+
+    def _close_multi_tp(
+        self, t: Trade, exit_price: float, timestamp: datetime, reason: str
+    ) -> Trade:
+        """Close remaining position and combine with partial PnL."""
+        t.exit_time = timestamp
+        t.exit_price = exit_price
+        t.exit_reason = reason
+
+        pip = 0.01
+        # Calculate PnL for the remaining runner portion
+        tp_levels = self.config.multi_tp_levels
+        remaining_size = t.original_size - sum(
+            t.original_size * tp_levels[i][1]
+            for i in range(min(t.partial_closes, len(tp_levels)))
+        )
+        remaining_size = max(remaining_size, 0.0)
+
+        if t.direction == Signal.BUY:
+            remaining_pips = (exit_price - t.entry_price) / pip
+        else:
+            remaining_pips = (t.entry_price - exit_price) / pip
+
+        remaining_pnl = remaining_pips * self.config.pip_value * remaining_size
+
+        # Total PnL = partial closes + runner
+        t.pnl = t.partial_pnl + remaining_pnl
+        t.size = t.original_size  # Restore for display
+
+        self.closed_trades.append(t)
+        self.open_trade = None
+        self._update_equity(exit_price)
+        return t
+
     # ── Close ─────────────────────────────────────────────────────────────
 
     def close_position(
         self, exit_price: float, timestamp: datetime, reason: str
     ) -> Trade:
         t = self.open_trade
+
+        # Multi-TP trades have partial PnL already banked
+        if getattr(t, 'exit_mode', 'tp_sl') == 'multi_tp_trail' and t.partial_pnl != 0:
+            t.size = t.original_size
+            return self._close_multi_tp(t, exit_price, timestamp, reason)
+
         t.exit_time   = timestamp
         t.exit_price  = exit_price
         t.exit_reason = reason
