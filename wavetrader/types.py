@@ -50,6 +50,7 @@ class Trade:
     current_sl: float = 0.0
     highest_price: float = 0.0   # Peak price for long trailing
     lowest_price:  float = 0.0   # Trough price for short trailing
+    trail_lock_pnl: float = 0.0  # Geometric trail: current locked PnL floor
 
     # Filled on close
     exit_time:   Optional[datetime] = None

@@ -161,6 +161,10 @@ class BacktestEngine:
         activate_r = self.config.trail_activate_r
 
         is_opposite_exit = getattr(t, 'exit_mode', 'tp_sl') == 'opposite_signal'
+        is_geometric = getattr(t, 'exit_mode', 'tp_sl') == 'geometric_trail'
+
+        if is_geometric:
+            return self._update_geometric_trail(t, current_high, current_low, current_close, timestamp)
 
         if t.direction == Signal.BUY:
             if current_high > t.highest_price:
@@ -206,6 +210,99 @@ class BacktestEngine:
             # Skip TP check for opposite_signal exit mode
             if not is_opposite_exit and current_low <= t.take_profit:
                 return self.close_position(t.take_profit, timestamp, "Take Profit")
+
+        self._update_equity(current_close)
+        return None
+
+    # ── Geometric Trailing Stop ───────────────────────────────────────────
+
+    def _update_geometric_trail(
+        self,
+        t: Trade,
+        current_high: float,
+        current_low: float,
+        current_close: float,
+        timestamp: datetime,
+    ) -> Optional[Trade]:
+        """
+        Geometric ratcheting trailing stop:
+          - No TP — ride winners via trailing stop only.
+          - Activate when unrealized PnL >= 1R (the dollar risk on this trade).
+          - Trail distance = trailing_stop_pct × initial SL distance.
+          - Floor locks at each R multiple: 1R, 2R, 4R, 8R, 16R...
+          - SL never moves backward.
+        """
+        pip = 0.01  # JPY pairs
+        pip_value = self.config.pip_value
+
+        if t.direction == Signal.BUY:
+            initial_risk_price = t.entry_price - t.stop_loss  # SL distance in price
+            trail_pct = t.trailing_stop_pct if t.trailing_stop_pct > 0 else 0.5
+            trail_distance = initial_risk_price * trail_pct
+            t.highest_price = max(t.highest_price, current_high)
+
+            # Dollar risk on this trade (1R)
+            risk_pips = initial_risk_price / pip
+            one_r = risk_pips * pip_value * t.size
+
+            # Unrealized PnL at peak
+            peak_pips = (t.highest_price - t.entry_price) / pip
+            peak_pnl = peak_pips * pip_value * t.size
+
+            if one_r > 0 and peak_pnl >= one_r:
+                # Trail activated: SL follows peak at trail_distance
+                trail_sl = t.highest_price - trail_distance
+
+                # R-step floor: lock at every R (1R, 2R, 3R, 4R...)
+                # At 3.5R, floor = 3R. Guarantees whole-R profit on pullback.
+                r_multiple = peak_pnl / one_r
+                floor_pnl = int(r_multiple) * one_r
+                t.trail_lock_pnl = max(t.trail_lock_pnl, floor_pnl)
+
+                # Floor SL: guarantee locked PnL minimum
+                floor_pips = t.trail_lock_pnl / max(pip_value * t.size, 1e-9)
+                floor_sl = t.entry_price + floor_pips * pip
+                new_sl = max(trail_sl, floor_sl)
+
+                if new_sl > t.current_sl:
+                    t.current_sl = new_sl
+
+            # Exit check
+            if current_low <= t.current_sl:
+                reason = "Trailing Stop" if t.current_sl > t.stop_loss else "Stop Loss"
+                return self.close_position(t.current_sl, timestamp, reason)
+
+        else:  # SELL
+            initial_risk_price = t.stop_loss - t.entry_price
+            trail_pct = t.trailing_stop_pct if t.trailing_stop_pct > 0 else 0.5
+            trail_distance = initial_risk_price * trail_pct
+            t.lowest_price = min(t.lowest_price, current_low)
+
+            risk_pips = initial_risk_price / pip
+            one_r = risk_pips * pip_value * t.size
+
+            trough_pips = (t.entry_price - t.lowest_price) / pip
+            trough_pnl = trough_pips * pip_value * t.size
+
+            if one_r > 0 and trough_pnl >= one_r:
+                trail_sl = t.lowest_price + trail_distance
+
+                # R-step floor: 1R, 2R, 3R, 4R...
+                r_multiple = trough_pnl / one_r
+                floor_pnl = int(r_multiple) * one_r
+                t.trail_lock_pnl = max(t.trail_lock_pnl, floor_pnl)
+
+                floor_pips = t.trail_lock_pnl / max(pip_value * t.size, 1e-9)
+                floor_sl = t.entry_price - floor_pips * pip
+                new_sl = min(trail_sl, floor_sl)
+
+                if new_sl < t.current_sl:
+                    t.current_sl = new_sl
+
+            # Exit check
+            if current_high >= t.current_sl:
+                reason = "Trailing Stop" if t.current_sl < t.stop_loss else "Stop Loss"
+                return self.close_position(t.current_sl, timestamp, reason)
 
         self._update_equity(current_close)
         return None

@@ -93,6 +93,7 @@ class StrategySetup:
     confidence: float                # Strategy's own confidence 0.0–1.0
     reason: str                      # "London swept Asian low → bullish reversal at demand zone"
     trailing_stop_pct: float = 0.0   # Optional trailing (0 = no trail)
+    exit_mode: str = "tp_sl"          # "tp_sl" | "geometric_trail"
     timestamp: Optional[datetime] = None
     context: Dict[str, Any] = field(default_factory=dict)  # Extra data for LLM narrative
 

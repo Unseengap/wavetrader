@@ -149,6 +149,7 @@ def run_strategy_backtest(
                         take_profit=setup.tp_pips,
                         trailing_stop_pct=setup.trailing_stop_pct,
                         timestamp=timestamp,
+                        exit_mode=getattr(setup, 'exit_mode', 'tp_sl'),
                     )
 
                 # 5. Open position via engine
